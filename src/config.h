@@ -33,7 +33,11 @@ constexpr int8_t PIN_AUDIO_PA = 46;  // 스피커 앰프 enable (Active-High)
 // 주의: EPD / Audio 전원은 Active-LOW (0 = ON). Waveshare board_power_bsp.cpp 기준.
 constexpr int8_t PIN_PWR_EPD   = 6;
 constexpr int8_t PIN_PWR_AUDIO = 42;
-constexpr int8_t PIN_PWR_VBAT  = 17;  // 이쪽만 Active-High (1 = ON)
+constexpr int8_t PIN_PWR_VBAT  = 17;  // 이쪽만 Active-High (1 = ON). 배터리 분압 게이팅.
+
+// ── 배터리 전압 ADC ───────────────────────────────────────────────
+// Waveshare 01_ADC_Test: ADC1_CH3 = GPIO4, 12dB 감쇠, 12bit, 읽은 값 x2 (1:2 분압)
+constexpr int8_t PIN_VBAT_ADC = 4;
 
 // ── 버튼 (둘 다 풀업, Active-LOW) ─────────────────────────────────
 constexpr int8_t PIN_BTN_BOOT = 0;

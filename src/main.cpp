@@ -15,9 +15,11 @@
 //   loopTask  (core 1, prio 1) : 버튼 + ePaper. 갱신에 1초 넘게 걸려도
 //                                 우선순위가 낮아 소리가 끊기지 않는다.
 #include <Arduino.h>
+#include <ArduinoOTA.h>
 #include <Audio.h>
 #include <WiFi.h>
 
+#include "battery.h"
 #include "config.h"
 #include "es8311.h"
 #include "log.h"
@@ -33,10 +35,13 @@ constexpr uint32_t kWifiTimeoutMs = 30000;
 constexpr uint32_t kLongPressMs   = 700;
 constexpr uint32_t kUiPeriodMs    = 30000;  // 아무 일 없어도 이 주기로 한 번 갱신
 constexpr uint32_t kRetryDelayMs  = 8000;   // 재접속 간격
+constexpr uint32_t kStatusPeriodMs = 60000; // 배터리·신호세기 측정 주기 (1분)
 
 // ── 전역 ──────────────────────────────────────────────────────────
-static Audio  audio;
-static ES8311 codec;
+static Audio    audio;
+static ES8311   codec;
+static Battery  battery;
+static TaskHandle_t audioTaskHandle = nullptr;
 
 struct Shared {
     uint8_t   index = kDefaultIndex;
@@ -45,6 +50,10 @@ struct Shared {
     PlayState state = ST_BOOT;
     String    detail;
     uint32_t  bitrate = 0;
+    float     battVolts = 0.0f;
+    uint8_t   battPercent = 0;
+    int16_t   wifiRssi = 0;
+    uint8_t   wifiBars = 0;
 };
 static Shared           shared;
 static SemaphoreHandle_t sharedLock;
@@ -208,6 +217,10 @@ static UiState snapshotUi() {
     u.detail = shared.detail;
     u.volume = muted ? 0 : shared.volume;
     u.bitrate = shared.bitrate;
+    u.battVolts = shared.battVolts;
+    u.battPercent = shared.battPercent;
+    u.wifiRssi = shared.wifiRssi;
+    u.wifiBars = shared.wifiBars;
     unlockShared();
 
     u.freq = kStations[idx].freq;
@@ -220,13 +233,87 @@ static UiState snapshotUi() {
 
 static bool uiChanged(const UiState& a, const UiState& b) {
     return a.freq != b.freq || a.state != b.state || a.volume != b.volume ||
-           a.wifi != b.wifi || a.detail != b.detail ||
-           (a.bitrate / 1000) != (b.bitrate / 1000);
+           a.wifi != b.wifi || a.wifiBars != b.wifiBars || a.detail != b.detail ||
+           (a.bitrate / 1000) != (b.bitrate / 1000) ||
+           // 전압은 소수 둘째 자리까지 표시하므로 그 단위로만 비교한다.
+           // 안 그러면 ADC 잡음 때문에 화면이 계속 다시 그려진다.
+           (int)(a.battVolts * 100) != (int)(b.battVolts * 100);
+}
+
+// 배터리 전압과 Wi-Fi 신호 세기. 둘 다 천천히 변하고, 무엇보다 매 루프마다
+// 읽으면 임계값 근처에서 값이 흔들려 ePaper 가 쉴 새 없이 다시 그려진다.
+static void pollSlowStatus() {
+    const float   v = battery.readVolts();
+    const uint8_t pct = Battery::voltsToPercent(v);
+
+    const bool    up = WiFi.status() == WL_CONNECTED;
+    const int16_t rssi = up ? (int16_t)WiFi.RSSI() : 0;
+    const uint8_t bars = up ? rssiToBars(rssi) : 0;
+
+    lockShared();
+    shared.battVolts = v;
+    shared.battPercent = pct;
+    shared.wifiRssi = rssi;
+    shared.wifiBars = bars;
+    unlockShared();
+
+    // 방전 추이를 보려면 이 줄을 모아 두면 된다. 1분에 한 줄이라 부담 없다.
+    RLOGI("배터리 %.2fV (%u%%)  Wi-Fi %ddBm (%u칸)  가동 %lu분", v, (unsigned)pct,
+          (int)rssi, (unsigned)bars, (unsigned long)(millis() / 60000));
 }
 
 // ── setup / loop ──────────────────────────────────────────────────
 static UiState  lastUi;
 static uint32_t lastUiMs = 0;
+
+// ── OTA ───────────────────────────────────────────────────────────
+// 이 보드를 매번 뜯어서 USB 를 꽂기 번거로워서 무선 업데이트를 넣었다.
+// 파티션 테이블(default_8MB.csv)에 app0/app1 두 슬롯이 이미 있어서 그대로 쓴다.
+static void setupOta() {
+    ArduinoOTA.setHostname(OTA_HOSTNAME);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+
+    ArduinoOTA.onStart([]() {
+        RLOGI("OTA 시작");
+        // 업데이트 중에는 대역폭과 CPU 를 전부 내준다. 오디오 태스크가 계속
+        // 돌면 전송이 느려지고 힙도 물고 있다.
+        if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
+        audio.stopSong();
+        codec.setMute(true);
+        codec.setPaEnabled(false);
+
+        setState(ST_UPDATING);
+        lastUi = snapshotUi();
+        uiRender(lastUi, true);
+        // 전송 중에는 화면을 안 건드린다. 한 번 갱신에 0.36초씩 잡아먹는다.
+    });
+
+    ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+        static uint8_t lastPct = 255;
+        const uint8_t pct = total ? (uint8_t)(done * 100 / total) : 0;
+        if (pct / 10 != lastPct / 10) {
+            lastPct = pct;
+            RLOGI("OTA %u%%", pct);
+        }
+    });
+
+    ArduinoOTA.onEnd([]() {
+        RLOGI("OTA 완료 — 재시작");
+        setState(ST_UPDATING, "REBOOT");
+        lastUi = snapshotUi();
+        uiRender(lastUi, true);
+    });
+
+    ArduinoOTA.onError([](ota_error_t e) {
+        RLOGE("OTA 실패: %u", (unsigned)e);
+        setState(ST_ERROR, "OTA FAIL");
+        if (audioTaskHandle) vTaskResume(audioTaskHandle);
+        codec.setPaEnabled(true);
+    });
+
+    ArduinoOTA.begin();
+    RLOGI("OTA 대기: %s.local (%s)", OTA_HOSTNAME, WiFi.localIP().toString().c_str());
+}
 
 void setup() {
     Serial.begin(115200);
@@ -239,6 +326,8 @@ void setup() {
     powerUpRails();
     btnBoot.begin();
     btnPwr.begin();
+    battery.begin(PIN_VBAT_ADC);
+    pollSlowStatus();
 
     uiBegin();
     lastUi = snapshotUi();
@@ -266,6 +355,7 @@ void setup() {
         return;  // loop() 에서 계속 재시도된다
     }
     RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
+    setupOta();
 
     // ── I2S + 코덱 ───────────────────────────────────────────────
     // 코덱을 먼저 설정하려면 MCLK 가 나오고 있어야 하므로 setPinout 이 먼저다.
@@ -315,7 +405,7 @@ void setup() {
     };
 
     // TLS 핸드셰이크(WiFiClientSecure)가 스택을 많이 먹어서 넉넉히 잡는다.
-    xTaskCreatePinnedToCore(audioTask, "audio", 16384, nullptr, 3, nullptr, 1);
+    xTaskCreatePinnedToCore(audioTask, "audio", 16384, nullptr, 3, &audioTaskHandle, 1);
 
     const Cmd cmd{Cmd::TUNE, kDefaultIndex};
     xQueueSend(cmdQueue, &cmd, 0);
@@ -355,6 +445,16 @@ void loop() {
         }
         unlockShared();
         applyVolume();
+    }
+
+    // ── 무선 업데이트 ────────────────────────────────────────────
+    if (WiFi.status() == WL_CONNECTED) ArduinoOTA.handle();
+
+    // ── 배터리 ───────────────────────────────────────────────────
+    static uint32_t lastStatusMs = 0;
+    if (millis() - lastStatusMs > kStatusPeriodMs) {
+        lastStatusMs = millis();
+        pollSlowStatus();
     }
 
     // ── ePaper ───────────────────────────────────────────────────

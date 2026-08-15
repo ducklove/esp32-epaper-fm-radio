@@ -113,6 +113,22 @@ pio device monitor
 `platformio.ini` 의 `upload_port` / `monitor_port` 는 `COM5` 로 잡혀 있다. 포트가
 다르면 그 줄을 고치거나 두 줄을 지워서 자동 탐색에 맡기면 된다.
 
+### 무선 업데이트 (OTA)
+
+OTA 가 들어간 펌웨어를 USB 로 한 번 올린 뒤부터는 Wi-Fi 로 갱신할 수 있다.
+
+```bash
+pio run -e epaper-radio-ota -t upload
+```
+
+호스트네임과 비밀번호는 `src/secrets.h` 의 `OTA_HOSTNAME` / `OTA_PASSWORD` 이고,
+`platformio.ini` 의 `upload_port` / `--auth` 와 값이 맞아야 한다. mDNS 가 막힌
+네트워크라면 `upload_port` 를 IP 주소로 바꾼다.
+
+업데이트가 시작되면 오디오 태스크를 정지시키고 앰프를 끈 뒤 화면에 `UPDATING`
+을 띄운다. 전송 중에는 화면을 갱신하지 않는다 — ePaper 한 번 갱신에 0.36초가
+걸려서 전송을 방해한다.
+
 ### Windows: 260자 경로 제한
 
 ESP-IDF 5.5 의 `esp_matter/connectedhomeip` 헤더 경로가 260자를 넘어서, 기본
@@ -181,6 +197,50 @@ _Update_Part : 364263                             ← ePaper 부분 갱신 364ms
 `audio_info_callback` 을 통해 같은 경로로 흘려보낸다.
 
 조용히 쓰고 싶으면 `platformio.ini` 의 `CORE_DEBUG_LEVEL` 을 1로 낮추면 된다.
+
+## 배터리
+
+배터리는 보드에 딸려 오지 않는다. MX1.25 2핀 리튬 배터리 헤더와 충전 회로만
+있으므로 셀은 직접 달아야 한다.
+
+전압은 **GPIO4(ADC1_CH3), 12dB 감쇠, 1:2 분압**으로 읽고, 이 분압 회로는
+`VBAT_PWR`(GPIO17)이 HIGH 일 때만 살아 있다. 헤더 오른쪽에 잔량 아이콘이,
+상태 줄에 실제 전압이 표시된다.
+
+전압만으로 잔량을 맞추는 건 부하에 따라 처져서 원래 부정확하다. 아이콘은
+어림값으로 보고, 정확한 값이 필요하면 상태 줄의 전압을 보면 된다.
+
+USB 가 꽂혀 있으면 충전 회로가 전압을 4.2V 부근으로 잡아 두므로 항상 만충으로
+보인다. 배터리만으로 돌릴 때의 값이 의미 있다.
+
+### 예상 재생 시간
+
+연속 스트리밍 시 소비 전류는 대략 이렇다 (측정값이 아니라 계산값).
+
+| 항목 | 전류 |
+|---|---|
+| ESP32-S3 (240MHz, Wi-Fi 상시 수신 + TLS + AAC 디코딩 + PSRAM) | 120\~170 mA |
+| ES8311 코덱 | ~10 mA |
+| 스피커 앰프 (음량에 따라) | 15\~100 mA |
+| ePaper | 평균 0.2 mA 미만 |
+
+1000mAh 셀 기준 대략 **4\~5시간**. 전력은 거의 전부 Wi-Fi 와 앰프가 쓰고
+ePaper 는 무시해도 된다.
+
+`main.cpp` 에서 스트리밍 안정성을 위해 `WiFi.setSleep(false)` 로 모뎀 슬립을
+꺼 두었는데, 이게 상시 30\~50mA 를 더 쓴다. 입력 버퍼가 640KB(192kbps 기준
+27초 분량)라 슬립을 켜도 끊기지 않을 가능성이 높고, 켜면 재생 시간이 20\~30%
+늘어난다.
+
+## 블루투스 스피커는 안 된다
+
+ESP32-S3 는 **BLE 전용**이다 (`esptool` 이 보고하는 Features 도 `BT 5 (LE)`).
+블루투스 스피커로 소리를 보내려면 A2DP 가 필요한데 A2DP 는 Classic
+Bluetooth(BR/EDR) 위에서만 동작하고, S3 에는 그게 없다. LE Audio(LC3)도 BT 5.2
+ISO 채널이 필요해서 S3 컨트롤러로는 안 된다.
+
+굳이 하려면 스피커 출력에 KCX_BT_EMITTER 같은 아날로그 블루투스 송신 모듈을
+물리는 방법이 있다. 펌웨어는 손댈 게 없다.
 
 ## 알려진 한계
 

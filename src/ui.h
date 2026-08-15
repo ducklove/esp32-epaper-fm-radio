@@ -11,6 +11,7 @@ enum PlayState : uint8_t {
     ST_PLAYING,
     ST_MUTED,
     ST_ERROR,
+    ST_UPDATING,  // OTA 펌웨어 수신 중
 };
 
 struct UiState {
@@ -22,7 +23,14 @@ struct UiState {
     uint8_t   volumeMax = 20;
     uint32_t  bitrate = 0;   // bit/s, 0 이면 표시 안 함
     bool      wifi = false;
+    uint8_t   wifiBars = 0;       // 0~3, RSSI 로 계산한 실제 신호 세기
+    int16_t   wifiRssi = 0;       // dBm (진단용)
+    float     battVolts = 0.0f;   // 0 이면 배터리 아이콘 숨김
+    uint8_t   battPercent = 0;
 };
+
+// RSSI(dBm) → 막대 0~3칸
+uint8_t rssiToBars(int32_t rssi);
 
 void uiBegin();
 // 화면을 다시 그린다. force 가 true 면 잔상 제거용 전체 갱신을 수행한다.

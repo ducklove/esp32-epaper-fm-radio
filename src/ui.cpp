@@ -54,8 +54,51 @@ const char* stateText(const UiState& s) {
         case ST_PLAYING:   return "ON AIR";
         case ST_MUTED:     return "MUTED";
         case ST_ERROR:     return "ERROR";
+        case ST_UPDATING:  return "UPDATING";
     }
     return "";
+}
+
+// 헤더 막대는 검정으로 채우므로 안에 그리는 것은 전부 흰색이다.
+//
+// 켜진 칸은 막대를 통째로 채우고, 꺼진 칸은 바닥에 2px 짜리 흔적만 남긴다.
+// 1비트 화면이라 회색으로 흐리게 그릴 수가 없어서 이렇게 구분한다.
+void drawWifiIcon(const UiState& s, int16_t x) {
+    if (!s.wifi) {
+        display.drawLine(x + 1, 5, x + 11, 15, GxEPD_WHITE);
+        display.drawLine(x + 11, 5, x + 1, 15, GxEPD_WHITE);
+        return;
+    }
+    for (int i = 0; i < 3; i++) {
+        const int16_t h = 4 + i * 4;
+        if (i < s.wifiBars) {
+            display.fillRect(x + i * 5, 15 - h, 3, h, GxEPD_WHITE);
+        } else {
+            display.fillRect(x + i * 5, 13, 3, 2, GxEPD_WHITE);
+        }
+    }
+}
+
+// 아이콘 본체는 x 부터, 잔량 퍼센트는 그 왼쪽에 오른쪽 정렬로 적는다.
+void drawBattery(const UiState& s, int16_t x) {
+    // 배터리가 안 붙어 있거나 게이팅이 꺼져 있으면 아예 안 그린다.
+    if (s.battVolts < 2.5f) return;
+
+    constexpr int16_t y = 5, bw = 26, bh = 11;
+    display.drawRect(x, y, bw, bh, GxEPD_WHITE);
+    display.fillRect(x + bw, y + 3, 3, bh - 6, GxEPD_WHITE);  // 양극 돌기
+
+    const int16_t inner = bw - 4;
+    const int16_t fill = (int16_t)((int32_t)inner * s.battPercent / 100);
+    if (fill > 0) display.fillRect(x + 2, y + 2, fill, bh - 4, GxEPD_WHITE);
+
+    char pct[6];
+    snprintf(pct, sizeof(pct), "%u%%", (unsigned)s.battPercent);
+    display.setFont(nullptr);  // 내장 5x7
+    display.setTextSize(1);
+    const int16_t tw = (int16_t)strlen(pct) * 6;
+    display.setCursor(x - 5 - tw, y + 2);
+    display.print(pct);
 }
 
 void drawHeader(const UiState& s) {
@@ -65,17 +108,9 @@ void drawHeader(const UiState& s) {
     display.setCursor(6, 15);
     display.print("FM RADIO");
 
-    // 오른쪽: Wi-Fi 안테나 아이콘 (막대 3개) — 끊기면 X 로
-    const int16_t ax = W - 22;
-    if (s.wifi) {
-        for (int i = 0; i < 3; i++) {
-            const int16_t h = 4 + i * 4;
-            display.fillRect(ax + i * 5, 15 - h, 3, h, GxEPD_WHITE);
-        }
-    } else {
-        display.drawLine(ax + 2, 5, ax + 12, 15, GxEPD_WHITE);
-        display.drawLine(ax + 12, 5, ax + 2, 15, GxEPD_WHITE);
-    }
+    drawWifiIcon(s, 112);
+    drawBattery(s, 160);
+
     display.setTextColor(GxEPD_BLACK);
 }
 
@@ -152,6 +187,12 @@ void drawStatus(const UiState& s) {
         line += "  ";
         line += s.detail;
     }
+    // 아이콘만으로는 잔량을 가늠하기 어려워서 실제 전압도 같이 적는다.
+    if (s.battVolts >= 2.5f) {
+        line += "  ";
+        line += String(s.battVolts, 2);
+        line += "V";
+    }
     drawCentered(line.c_str(), W / 2, 175);
 }
 
@@ -185,6 +226,14 @@ void drawAll(const UiState& s) {
 }
 
 }  // namespace
+
+// 흔히 쓰는 구간. -55dBm 이상이면 아주 좋고, -80 아래로 내려가면 끊기기 시작한다.
+uint8_t rssiToBars(int32_t rssi) {
+    if (rssi >= -60) return 3;
+    if (rssi >= -70) return 2;
+    if (rssi >= -80) return 1;
+    return 0;
+}
 
 void uiBegin() {
     // GxEPD2 는 전역 SPI 인스턴스를 쓴다. MISO 는 안 쓰므로 -1.

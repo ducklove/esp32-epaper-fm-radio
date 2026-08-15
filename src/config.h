@@ -54,6 +54,11 @@ constexpr uint32_t CPU_FREQ_MHZ = 160;
 constexpr bool WIFI_SLEEP_WHILE_PLAYING = false;
 constexpr bool WIFI_SLEEP_WHILE_IDLE    = true;
 
+// 오디오 라이브러리의 상세 로그(evt_info). 켜면 HLS 세그먼트마다 긴 URL 과
+// content-length 가 4~5초 간격으로 쏟아진다. 이 콜백은 오디오 태스크에서
+// 실행되므로 출력 자체가 재생을 방해할 수 있다. 문제를 쫓을 때만 켠다.
+constexpr bool AUDIO_VERBOSE_LOG = false;
+
 // ── 배터리 전압 ADC ───────────────────────────────────────────────
 // Waveshare 01_ADC_Test: ADC1_CH3 = GPIO4, 12dB 감쇠, 12bit, 읽은 값 x2 (1:2 분압)
 constexpr int8_t PIN_VBAT_ADC = 4;

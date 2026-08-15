@@ -291,8 +291,9 @@ static void powerUpRails() {
     gpio_hold_dis((gpio_num_t)PIN_PWR_EPD);
     gpio_hold_dis((gpio_num_t)PIN_PWR_AUDIO);
     gpio_hold_dis((gpio_num_t)PIN_PWR_VBAT);
-    // 깨우기용으로 RTC 기능을 켜 둔 버튼도 일반 GPIO 로 되돌린다.
+    // 깨우기용으로 RTC 기능을 켜 둔 버튼들도 일반 GPIO 로 되돌린다.
     rtc_gpio_deinit((gpio_num_t)PIN_BTN_PWR);
+    rtc_gpio_deinit((gpio_num_t)PIN_BTN_BOOT);
 
     pinMode(PIN_PWR_EPD, OUTPUT);
     pinMode(PIN_PWR_AUDIO, OUTPUT);
@@ -419,10 +420,33 @@ void setup() {
     setCpuFrequencyMhz(CPU_FREQ_MHZ);
 
     Serial.begin(115200);
+    // USB 가 호스트에 연결됐는데 아무도 포트를 읽지 않으면 CDC 링버퍼가 차고,
+    // write 한 번이 최대 2초(20회 x 100ms)까지 블로킹된다. 그게 오디오 태스크에서
+    // 일어나면 소리가 끊긴다 — 충전 중에만 끊기던 원인이 이것이다.
+    // 0 으로 두면 막히는 대신 그냥 버린다. 로그보다 소리가 우선이다.
+    Serial.setTxTimeoutMs(0);
     delay(300);
+
     RLOGI("ESP32-S3 ePaper FM Radio  (CPU %u MHz, 모뎀슬립 재생=%s 유휴=%s)",
           (unsigned)getCpuFrequencyMhz(), WIFI_SLEEP_WHILE_PLAYING ? "on" : "off",
           WIFI_SLEEP_WHILE_IDLE ? "on" : "off");
+
+    // 딥슬립에서 깨어난 것인지, 전원을 새로 넣은 것인지 남긴다.
+    // 깨우기가 안 될 때 '못 깨어난 것'과 '깨어나서 죽은 것'을 구분해 준다.
+    switch (esp_sleep_get_wakeup_cause()) {
+        case ESP_SLEEP_WAKEUP_EXT1:
+            RLOGI("딥슬립에서 기상 (버튼)");
+            break;
+        case ESP_SLEEP_WAKEUP_EXT0:
+            RLOGI("딥슬립에서 기상 (ext0)");
+            break;
+        case ESP_SLEEP_WAKEUP_UNDEFINED:
+            RLOGI("전원 인가로 부팅");
+            break;
+        default:
+            RLOGI("기상 원인 코드 %d", (int)esp_sleep_get_wakeup_cause());
+            break;
+    }
 
     sharedLock = xSemaphoreCreateMutex();
     cmdQueue = xQueueCreate(4, sizeof(Cmd));
@@ -491,8 +515,12 @@ void setup() {
     // m.s 는 이벤트 이름, m.msg 가 내용, m.arg1 이 그 안에서 뽑아낸 마지막 숫자다.
     Audio::audio_info_callback = [](Audio::msg_t m) {
         // 콜백을 걸어두면 라이브러리 내부 로그도 전부 이쪽으로 넘어온다.
-        // 그냥 버리면 스트리밍이 왜 안 되는지 알 길이 없어서 시리얼로 흘려보낸다.
-        if (m.msg) Serial.printf("[A/%s] %s\n", m.s ? m.s : "?", m.msg);
+        // 다만 evt_info 는 세그먼트마다 쏟아지는데다 이 콜백이 오디오 태스크에서
+        // 돌기 때문에, 기본적으로는 버리고 의미 있는 이벤트만 남긴다.
+        const bool noisy = (m.e == Audio::evt_info);
+        if (m.msg && (AUDIO_VERBOSE_LOG || !noisy)) {
+            Serial.printf("[A/%s] %s\n", m.s ? m.s : "?", m.msg);
+        }
 
         switch (m.e) {
             case Audio::evt_bitrate:
@@ -533,7 +561,7 @@ static void powerOff() {
     uiSleep();  // 패널을 하이버네이트한 뒤에 전원을 끊어야 안전하다
 
     // 누른 채로 잠들면 곧바로 다시 깨어난다. 뗄 때까지 기다린다.
-    while (digitalRead(PIN_BTN_PWR) == LOW) delay(20);
+    while (digitalRead(PIN_BTN_PWR) == LOW || digitalRead(PIN_BTN_BOOT) == LOW) delay(20);
     delay(100);
 
     // 전원 레일 차단. EPD/Audio 는 Active-LOW 라 HIGH 가 OFF,
@@ -549,12 +577,28 @@ static void powerOff() {
     gpio_hold_en((gpio_num_t)PIN_PWR_VBAT);
     gpio_deep_sleep_hold_en();
 
-    // PWR 버튼이 LOW 로 떨어지면 깨어난다. 슬립 중에도 풀업이 살아 있어야 한다.
-    rtc_gpio_pullup_en((gpio_num_t)PIN_BTN_PWR);
-    rtc_gpio_pulldown_dis((gpio_num_t)PIN_BTN_PWR);
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BTN_PWR, 0);
+    // 기상 조건. ext0 대신 ext1 을 쓴다.
+    //
+    // ext0 는 핀 하나만 되고 RTC 주변장치 도메인이 켜져 있어야 하는데,
+    // 그 설정을 빠뜨리면 슬립 중 내부 풀업이 죽어 핀이 떠 버리고 버튼을
+    // 눌러도 아무 일이 없다. ext1 은 여러 핀을 한꺼번에 볼 수 있어서
+    // PWR 과 BOOT 어느 쪽을 눌러도 깨어나게 할 수 있다.
+    //
+    // 두 핀 모두 내부 풀업으로 HIGH 를 유지하다가 눌리면 LOW 로 떨어지므로
+    // ANY_LOW 로 잡는다. 풀업이 슬립 중에도 살아 있으려면 RTC 주변장치
+    // 도메인을 켜 둬야 한다 — 이게 앞서 빠졌던 부분이다.
+    const uint64_t wakeMask = (1ULL << PIN_BTN_PWR) | (1ULL << PIN_BTN_BOOT);
+    for (int pin : {(int)PIN_BTN_PWR, (int)PIN_BTN_BOOT}) {
+        rtc_gpio_init((gpio_num_t)pin);
+        rtc_gpio_set_direction((gpio_num_t)pin, RTC_GPIO_MODE_INPUT_ONLY);
+        rtc_gpio_pulldown_dis((gpio_num_t)pin);
+        rtc_gpio_pullup_en((gpio_num_t)pin);
+    }
+    esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
     Serial.flush();
+    delay(50);
     esp_deep_sleep_start();
 }
 

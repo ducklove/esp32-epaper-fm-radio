@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+.venv/
+
+# Wi-Fi 비밀번호가 들어가는 파일 — 커밋 금지
+src/secrets.h

@@ -113,6 +113,25 @@ pio device monitor
 `platformio.ini` 의 `upload_port` / `monitor_port` 는 `COM5` 로 잡혀 있다. 포트가
 다르면 그 줄을 고치거나 두 줄을 지워서 자동 탐색에 맡기면 된다.
 
+### Windows: 260자 경로 제한
+
+ESP-IDF 5.5 의 `esp_matter/connectedhomeip` 헤더 경로가 260자를 넘어서, 기본
+PlatformIO 홈(`C:\Users\<user>\.platformio`)으로는 패키지 압축 해제가
+`FileNotFoundError` 로 깨진다. 홈 경로를 짧게 만들면 통과한다.
+
+```bash
+cmd //c mklink /J C:\pio C:\Users\%USERNAME%\.platformio
+```
+
+이후 빌드할 때마다 `PLATFORMIO_CORE_DIR=C:\pio` 를 지정한다.
+
+```bash
+PLATFORMIO_CORE_DIR=C:\pio pio run -t upload
+```
+
+(레지스트리의 `LongPathsEnabled` 를 켜는 방법도 있지만 시스템 전역 설정이라
+여기서는 건드리지 않았다.)
+
 ## 구조
 
 ```

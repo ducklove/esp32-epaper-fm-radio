@@ -9,7 +9,7 @@ enum PlayState : uint8_t {
     ST_TUNING,    // 방송사 API 로 스트림 URL 해석 중
     ST_BUFFERING, // 연결은 됐고 아직 소리가 안 나옴
     ST_PLAYING,
-    ST_MUTED,
+    ST_PAUSED,    // 스트림을 끊고 오디오 전원까지 내린 상태
     ST_ERROR,
     ST_UPDATING,  // OTA 펌웨어 수신 중
 };
@@ -35,4 +35,6 @@ uint8_t rssiToBars(int32_t rssi);
 void uiBegin();
 // 화면을 다시 그린다. force 가 true 면 잔상 제거용 전체 갱신을 수행한다.
 void uiRender(const UiState& s, bool forceFull = false);
+// 전원 끔 화면. ePaper 는 전원이 끊겨도 그림이 남으므로 이대로 유지된다.
+void uiRenderOff(const UiState& s);
 void uiSleep();

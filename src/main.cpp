@@ -5,10 +5,11 @@
 // ePaper 에는 실제 서울 FM 주파수를 그대로 쓴 아날로그 다이얼을 그린다.
 //
 // 조작 (버튼 2개)
-//   BOOT 짧게  : 다음 채널 (주파수 오름차순)
-//   BOOT 길게  : 이전 채널
-//   PWR  짧게  : 볼륨 +2 (최대에서 다시 0으로)
-//   PWR  길게  : 음소거 토글
+//   BOOT 짧게       : 다음 채널 (주파수 오름차순)
+//   BOOT 길게       : 이전 채널
+//   PWR  짧게       : 볼륨 +2 (최대에서 다시 0으로)
+//   PWR  길게 0.7초 : 일시정지 / 재개
+//   PWR  길게 2초   : 전원 끔 (딥슬립). 다시 PWR 을 누르면 켜진다.
 //
 // 스레드 구조
 //   audioTask (core 1, prio 3) : 선국 + audio.loop(). 오디오는 여기서만 만진다.
@@ -18,6 +19,8 @@
 #include <ArduinoOTA.h>
 #include <Audio.h>
 #include <WiFi.h>
+#include <driver/rtc_io.h>
+#include <esp_sleep.h>
 
 #include "battery.h"
 #include "config.h"
@@ -32,8 +35,18 @@ constexpr uint8_t  kVolumeSteps   = 20;
 constexpr uint8_t  kDefaultVolume = 14;
 constexpr uint8_t  kDefaultIndex  = 2;      // KBS Classic FM 93.1
 constexpr uint32_t kWifiTimeoutMs = 30000;
-constexpr uint32_t kLongPressMs   = 700;
-constexpr uint32_t kUiPeriodMs    = 30000;  // 아무 일 없어도 이 주기로 한 번 갱신
+constexpr uint32_t kLongPressMs     = 700;
+constexpr uint32_t kVeryLongPressMs = 2000;  // PWR 을 이만큼 누르면 전원 끔
+// 표시할 내용이 바뀌지 않으면 다시 그리지 않는다.
+//
+// 잔상은 부분 갱신이 쌓여서 생기는 것이지 시간이 지나서 생기는 게 아니고,
+// 그건 이미 부분 갱신 12회마다 전체 갱신을 넣어 처리하고 있다. 시간 기준
+// 갱신은 얻는 것 없이 364ms 짜리 SPI 전송과 패널 charge pump 전류 스파이크만
+// 만든다. 충전 중처럼 전원 레일이 빠듯할 때 이게 겹치면 Wi-Fi 수신이 순간
+// 끊겨 소리가 튄다.
+//
+// 정적 이미지를 아주 오래 방치하지 말라는 패널 쪽 권고만 하루 단위로 남긴다.
+constexpr uint32_t kUiPeriodMs    = 24UL * 60 * 60 * 1000;  // 24시간
 constexpr uint32_t kRetryDelayMs  = 8000;   // 재접속 간격
 constexpr uint32_t kStatusPeriodMs = 60000; // 배터리·신호세기 측정 주기 (1분)
 
@@ -46,7 +59,7 @@ static TaskHandle_t audioTaskHandle = nullptr;
 struct Shared {
     uint8_t   index = kDefaultIndex;
     uint8_t   volume = kDefaultVolume;
-    bool      muted = false;
+    bool      paused = false;
     PlayState state = ST_BOOT;
     String    detail;
     uint32_t  bitrate = 0;
@@ -60,7 +73,7 @@ static SemaphoreHandle_t sharedLock;
 
 static QueueHandle_t cmdQueue;
 struct Cmd {
-    enum Kind : uint8_t { TUNE } kind;
+    enum Kind : uint8_t { TUNE, PAUSE, RESUME } kind;
     uint8_t index;
 };
 
@@ -80,10 +93,12 @@ static float volumeToDb(uint8_t vol) { return -40.0f + 2.0f * (float)vol; }
 static void applyVolume() {
     lockShared();
     const uint8_t vol = shared.volume;
-    const bool    muted = shared.muted;
+    const bool    paused = shared.paused;
     unlockShared();
 
-    if (muted || vol == 0) {
+    if (paused) return;  // 일시정지 중에는 코덱 전원이 아예 내려가 있다
+
+    if (vol == 0) {
         codec.setMute(true);
     } else {
         codec.setMute(false);
@@ -116,6 +131,47 @@ static void tune(uint8_t index) {
     setState(ST_BUFFERING);
 }
 
+// 일시정지는 단순한 뮤트가 아니다. 뮤트는 DAC 만 막을 뿐 Wi-Fi 수신과 디코딩이
+// 그대로 돌아서 전력의 대부분(약 120mA)을 계속 먹는다. 여기서는 스트림을 끊고
+// 오디오 전원 레일까지 내려 15~20mA 수준으로 떨어뜨린다.
+// Wi-Fi 는 유휴 상태로 남긴다 — 모뎀 슬립 중이라 싸고, OTA 가 살아 있고,
+// 재개가 즉시 된다.
+static void pauseAudio() {
+    RLOGI("일시정지 — 스트림 종료, 오디오 전원 차단");
+    audio.stopSong();
+    codec.setMute(true);
+    codec.setPaEnabled(false);
+    digitalWrite(PIN_PWR_AUDIO, HIGH);  // Active-LOW 라 HIGH 가 OFF
+
+    lockShared();
+    shared.paused = true;
+    shared.state = ST_PAUSED;
+    shared.bitrate = 0;
+    unlockShared();
+}
+
+static void resumeAudio() {
+    RLOGI("재개 — 오디오 전원 복구");
+    digitalWrite(PIN_PWR_AUDIO, LOW);
+    delay(100);  // 코덱 전원이 올라올 시간
+
+    // 전원이 끊겼으니 ES8311 은 초기 상태다. 부팅 때와 똑같이 다시 세운다.
+    if (!codec.begin(PIN_I2C_SDA, PIN_I2C_SCL, AUDIO_SAMPLE_RATE, AUDIO_BITS,
+                     AUDIO_MCLK_DIV, PIN_AUDIO_PA)) {
+        RLOGE("재개 실패 — 코덱을 다시 세우지 못함");
+        setState(ST_ERROR, "NO CODEC");
+        return;
+    }
+
+    lockShared();
+    shared.paused = false;
+    const uint8_t idx = shared.index;
+    unlockShared();
+
+    applyVolume();
+    tune(idx);
+}
+
 static void audioTask(void*) {
     uint32_t codecRate = AUDIO_SAMPLE_RATE;
     uint32_t lastRetryMs = millis();
@@ -123,7 +179,22 @@ static void audioTask(void*) {
     for (;;) {
         Cmd cmd;
         if (xQueueReceive(cmdQueue, &cmd, 0) == pdTRUE) {
-            if (cmd.kind == Cmd::TUNE) tune(cmd.index);
+            switch (cmd.kind) {
+                case Cmd::TUNE:   tune(cmd.index); break;
+                case Cmd::PAUSE:  pauseAudio();    break;
+                case Cmd::RESUME: resumeAudio();   break;
+            }
+        }
+
+        // 일시정지 중에는 라이브러리를 돌릴 것도, 상태를 볼 것도 없다.
+        {
+            lockShared();
+            const bool paused = shared.paused;
+            unlockShared();
+            if (paused) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
         }
 
         audio.loop();
@@ -169,7 +240,8 @@ class Button {
 
     void begin() { pinMode(_pin, INPUT_PULLUP); }
 
-    // 눌렀다 뗐을 때 1회만 보고한다. 0 = 없음, 1 = 짧게, 2 = 길게
+    // 눌렀다 뗐을 때 1회만 보고한다.
+    // 0 = 없음, 1 = 짧게, 2 = 길게, 3 = 아주 길게
     uint8_t poll() {
         const bool down = digitalRead(_pin) == LOW;
         const uint32_t now = millis();
@@ -181,10 +253,13 @@ class Button {
             _down = false;
             const uint32_t held = now - _since;
             if (held < 40) return 0;   // 채터링
+            if (held >= kVeryLongPressMs) return 3;
             return held >= kLongPressMs ? 2 : 1;
         }
         return 0;
     }
+
+    bool isDown() const { return _down; }
 
   private:
     uint8_t  _pin;
@@ -198,6 +273,15 @@ static Button btnPwr(PIN_BTN_PWR);
 // ── 전원 레일 ─────────────────────────────────────────────────────
 // EPD/Audio 는 Active-LOW, VBAT 만 Active-HIGH (Waveshare board_power_bsp.cpp)
 static void powerUpRails() {
+    // 딥슬립에서 깨어난 경우 powerOff() 가 걸어 둔 홀드가 아직 살아 있다.
+    // 먼저 풀지 않으면 아래 digitalWrite 가 먹히지 않아 전원이 안 켜진다.
+    gpio_deep_sleep_hold_dis();
+    gpio_hold_dis((gpio_num_t)PIN_PWR_EPD);
+    gpio_hold_dis((gpio_num_t)PIN_PWR_AUDIO);
+    gpio_hold_dis((gpio_num_t)PIN_PWR_VBAT);
+    // 깨우기용으로 RTC 기능을 켜 둔 버튼도 일반 GPIO 로 되돌린다.
+    rtc_gpio_deinit((gpio_num_t)PIN_BTN_PWR);
+
     pinMode(PIN_PWR_EPD, OUTPUT);
     pinMode(PIN_PWR_AUDIO, OUTPUT);
     pinMode(PIN_PWR_VBAT, OUTPUT);
@@ -212,10 +296,10 @@ static UiState snapshotUi() {
     UiState u;
     lockShared();
     const uint8_t idx = shared.index;
-    const bool    muted = shared.muted;
+    const bool    paused = shared.paused;
     u.state = shared.state;
     u.detail = shared.detail;
-    u.volume = muted ? 0 : shared.volume;
+    u.volume = paused ? 0 : shared.volume;
     u.bitrate = shared.bitrate;
     u.battVolts = shared.battVolts;
     u.battPercent = shared.battPercent;
@@ -227,7 +311,7 @@ static UiState snapshotUi() {
     u.name = kStations[idx].name;
     u.volumeMax = kVolumeSteps;
     u.wifi = WiFi.status() == WL_CONNECTED;
-    if (u.state == ST_PLAYING && muted) u.state = ST_MUTED;
+    if (paused) u.state = ST_PAUSED;
     return u;
 }
 
@@ -235,9 +319,9 @@ static bool uiChanged(const UiState& a, const UiState& b) {
     return a.freq != b.freq || a.state != b.state || a.volume != b.volume ||
            a.wifi != b.wifi || a.wifiBars != b.wifiBars || a.detail != b.detail ||
            (a.bitrate / 1000) != (b.bitrate / 1000) ||
-           // 전압은 소수 둘째 자리까지 표시하므로 그 단위로만 비교한다.
-           // 안 그러면 ADC 잡음 때문에 화면이 계속 다시 그려진다.
-           (int)(a.battVolts * 100) != (int)(b.battVolts * 100);
+           // 전압은 화면에 적는 자릿수(0.1V)로만 비교한다. 더 잘게 보면
+           // ADC 잡음과 충전 전류 변동 때문에 화면이 쉴 새 없이 다시 그려진다.
+           (int)(a.battVolts * 10) != (int)(b.battVolts * 10);
 }
 
 // 배터리 전압과 Wi-Fi 신호 세기. 둘 다 천천히 변하고, 무엇보다 매 루프마다
@@ -258,8 +342,12 @@ static void pollSlowStatus() {
     unlockShared();
 
     // 방전 추이를 보려면 이 줄을 모아 두면 된다. 1분에 한 줄이라 부담 없다.
-    RLOGI("배터리 %.2fV (%u%%)  Wi-Fi %ddBm (%u칸)  가동 %lu분", v, (unsigned)pct,
-          (int)rssi, (unsigned)bars, (unsigned long)(millis() / 60000));
+    // 버퍼 잔량도 같이 찍는다 — 모뎀 슬립이 수신을 방해하면 여기가 먼저 마른다.
+    const uint32_t bufSize = audio.getInBufferSize();
+    const uint32_t bufPct = bufSize ? (audio.inBufferFilled() * 100 / bufSize) : 0;
+    RLOGI("배터리 %.2fV (%u%%)  Wi-Fi %ddBm (%u칸)  버퍼 %u%%  가동 %lu분", v,
+          (unsigned)pct, (int)rssi, (unsigned)bars, (unsigned)bufPct,
+          (unsigned long)(millis() / 60000));
 }
 
 // ── setup / loop ──────────────────────────────────────────────────
@@ -316,9 +404,12 @@ static void setupOta() {
 }
 
 void setup() {
+    setCpuFrequencyMhz(CPU_FREQ_MHZ);
+
     Serial.begin(115200);
     delay(300);
-    RLOGI("ESP32-S3 ePaper FM Radio");
+    RLOGI("ESP32-S3 ePaper FM Radio  (CPU %u MHz, 모뎀슬립 %s)",
+          (unsigned)getCpuFrequencyMhz(), WIFI_MODEM_SLEEP ? "on" : "off");
 
     sharedLock = xSemaphoreCreateMutex();
     cmdQueue = xQueueCreate(4, sizeof(Cmd));
@@ -339,7 +430,9 @@ void setup() {
     uiRender(lastUi);
 
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);  // 스트리밍 중 끊김 방지
+    // 모뎀 슬립은 배터리에서 가장 크게 아끼는 항목이다(30~50mA). 끊김은
+    // 640KB 입력 버퍼가 흡수한다. config.h 에서 되돌릴 수 있다.
+    WiFi.setSleep(WIFI_MODEM_SLEEP ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
     WiFi.setAutoReconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -411,6 +504,48 @@ void setup() {
     xQueueSend(cmdQueue, &cmd, 0);
 }
 
+// ── 전원 끄기 (딥슬립) ────────────────────────────────────────────
+// 완전히 차단하는 스위치가 없어서 딥슬립으로 대신한다. ePaper 는 전원이
+// 끊겨도 그림이 남으므로 꺼진 화면이 그대로 유지된다.
+// PWR(GPIO18)을 다시 누르면 깨어나고, 그때는 setup() 부터 새로 시작한다.
+static void powerOff() {
+    RLOGI("전원 끔 — 딥슬립 진입");
+
+    // 소리부터 끊는다. 화면 그리는 동안 계속 울리면 어색하다.
+    if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
+    audio.stopSong();
+    codec.setMute(true);
+    codec.setPaEnabled(false);
+
+    uiRenderOff(snapshotUi());
+    uiSleep();  // 패널을 하이버네이트한 뒤에 전원을 끊어야 안전하다
+
+    // 누른 채로 잠들면 곧바로 다시 깨어난다. 뗄 때까지 기다린다.
+    while (digitalRead(PIN_BTN_PWR) == LOW) delay(20);
+    delay(100);
+
+    // 전원 레일 차단. EPD/Audio 는 Active-LOW 라 HIGH 가 OFF,
+    // VBAT 분압 게이팅은 Active-HIGH 라 LOW 가 OFF.
+    digitalWrite(PIN_PWR_AUDIO, HIGH);
+    digitalWrite(PIN_PWR_EPD, HIGH);
+    digitalWrite(PIN_PWR_VBAT, LOW);
+
+    // 딥슬립에 들어가면 일반 GPIO 는 전원이 내려가 떠 버린다. 레일이
+    // 다시 켜지지 않도록 레벨을 붙잡아 둔다.
+    gpio_hold_en((gpio_num_t)PIN_PWR_AUDIO);
+    gpio_hold_en((gpio_num_t)PIN_PWR_EPD);
+    gpio_hold_en((gpio_num_t)PIN_PWR_VBAT);
+    gpio_deep_sleep_hold_en();
+
+    // PWR 버튼이 LOW 로 떨어지면 깨어난다. 슬립 중에도 풀업이 살아 있어야 한다.
+    rtc_gpio_pullup_en((gpio_num_t)PIN_BTN_PWR);
+    rtc_gpio_pulldown_dis((gpio_num_t)PIN_BTN_PWR);
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BTN_PWR, 0);
+
+    Serial.flush();
+    esp_deep_sleep_start();
+}
+
 void loop() {
     // Wi-Fi 가 끊긴 채로 부팅했으면 계속 재시도
     if (WiFi.status() != WL_CONNECTED) {
@@ -435,16 +570,23 @@ void loop() {
     }
 
     if (const uint8_t ev = btnPwr.poll()) {
-        lockShared();
-        if (ev == 1) {
+        if (ev == 3) {
+            powerOff();  // 돌아오지 않는다 (딥슬립)
+        } else if (ev == 2) {
+            // 일시정지 토글. 뮤트와 달리 스트림과 오디오 전원까지 끊는다.
+            lockShared();
+            const bool paused = shared.paused;
+            unlockShared();
+
+            const Cmd cmd{paused ? Cmd::RESUME : Cmd::PAUSE, 0};
+            xQueueSend(cmdQueue, &cmd, 0);
+        } else {
+            lockShared();
             shared.volume = (uint8_t)(shared.volume + 2);
             if (shared.volume > kVolumeSteps) shared.volume = 0;
-            shared.muted = false;
-        } else {
-            shared.muted = !shared.muted;
+            unlockShared();
+            applyVolume();
         }
-        unlockShared();
-        applyVolume();
     }
 
     // ── 무선 업데이트 ────────────────────────────────────────────

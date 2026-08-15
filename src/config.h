@@ -35,6 +35,18 @@ constexpr int8_t PIN_PWR_EPD   = 6;
 constexpr int8_t PIN_PWR_AUDIO = 42;
 constexpr int8_t PIN_PWR_VBAT  = 17;  // 이쪽만 Active-High (1 = ON). 배터리 분압 게이팅.
 
+// ── 전력 절감 ─────────────────────────────────────────────────────
+// 300mAh 급 셀로도 버티게 하려고 넣은 설정. 소리가 튀면 여기부터 되돌린다.
+//
+// CPU 클럭. AAC-LC 디코딩과 TLS 를 감당해야 해서 무작정 낮출 수는 없지만,
+// 240MHz 는 과하다. ESP32-S3 의 동작 전류는 클럭에 거의 비례한다.
+constexpr uint32_t CPU_FREQ_MHZ = 160;
+
+// Wi-Fi 모뎀 슬립. 켜면 비콘 사이에 무선을 재워 30~50mA 를 아낀다.
+// 대신 수신이 잠깐씩 끊기는데, 입력 버퍼가 640KB(192kbps 기준 약 27초)라
+// 흡수된다. false 로 두면 항상 깨어 있어 안정적이지만 그만큼 더 먹는다.
+constexpr bool WIFI_MODEM_SLEEP = true;
+
 // ── 배터리 전압 ADC ───────────────────────────────────────────────
 // Waveshare 01_ADC_Test: ADC1_CH3 = GPIO4, 12dB 감쇠, 12bit, 읽은 값 x2 (1:2 분압)
 constexpr int8_t PIN_VBAT_ADC = 4;

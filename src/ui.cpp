@@ -52,7 +52,7 @@ const char* stateText(const UiState& s) {
         case ST_TUNING:    return "TUNING";
         case ST_BUFFERING: return "BUFFERING";
         case ST_PLAYING:   return "ON AIR";
-        case ST_MUTED:     return "MUTED";
+        case ST_PAUSED:    return "PAUSED";
         case ST_ERROR:     return "ERROR";
         case ST_UPDATING:  return "UPDATING";
     }
@@ -261,6 +261,45 @@ void uiRender(const UiState& s, bool forceFull) {
     display.firstPage();
     do {
         drawAll(s);
+    } while (display.nextPage());
+
+    // 다음 갱신까지 패널을 재워 둔다. 안 그러면 그림이 멈춰 있는 동안에도
+    // 대기 전류를 계속 먹는다. GxEPD2 가 다음 출력 때 알아서 다시 깨운다.
+    display.hibernate();
+}
+
+void uiRenderOff(const UiState& s) {
+    // 잔상이 남으면 꺼진 채로 계속 보이므로 전체 갱신으로 깨끗하게 지운다.
+    display.setFullWindow();
+    sinceFullRefresh = 0;
+
+    display.firstPage();
+    do {
+        display.fillScreen(GxEPD_WHITE);
+        display.setTextColor(GxEPD_BLACK);
+
+        display.setFont(&FreeSansBold24pt7b);
+        drawCentered("OFF", W / 2, 92);
+
+        // 마지막으로 듣던 채널을 남겨 둔다 — 다시 켜면 여기로 돌아온다.
+        char freq[10];
+        snprintf(freq, sizeof(freq), "%.1f MHz", s.freq);
+        display.setFont(&FreeSansBold9pt7b);
+        drawCentered(freq, W / 2, 122);
+        display.setFont(&FreeSans9pt7b);
+        drawCentered(s.name.isEmpty() ? "---" : s.name.c_str(), W / 2, 142);
+
+        display.drawFastHLine(30, 160, W - 60, GxEPD_BLACK);
+
+        display.setFont(nullptr);
+        display.setTextSize(1);
+        drawCentered("PRESS PWR TO WAKE", W / 2, 178);
+
+        if (s.battVolts >= 2.5f) {
+            char b[16];
+            snprintf(b, sizeof(b), "%u%%  %.1fV", (unsigned)s.battPercent, s.battVolts);
+            drawCentered(b, W / 2, 192);
+        }
     } while (display.nextPage());
 }
 

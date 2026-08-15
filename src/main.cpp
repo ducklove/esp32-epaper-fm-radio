@@ -87,6 +87,14 @@ static void setState(PlayState st, const String& detail = String()) {
     unlockShared();
 }
 
+// 모뎀 슬립을 재생/유휴 상태에 따라 갈아 끼운다. 근거는 config.h 참고.
+static void applyWifiPowerSave(bool playing) {
+    const bool sleepOn = playing ? WIFI_SLEEP_WHILE_PLAYING : WIFI_SLEEP_WHILE_IDLE;
+    WiFi.setSleep(sleepOn ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+    RLOGI("Wi-Fi 모뎀 슬립: %s (%s)", sleepOn ? "on" : "off",
+          playing ? "재생" : "유휴");
+}
+
 // 볼륨 단계를 코덱 dB 로. 20단계가 -38dB ~ 0dB 를 덮는다.
 static float volumeToDb(uint8_t vol) { return -40.0f + 2.0f * (float)vol; }
 
@@ -143,6 +151,9 @@ static void pauseAudio() {
     codec.setPaEnabled(false);
     digitalWrite(PIN_PWR_AUDIO, HIGH);  // Active-LOW 라 HIGH 가 OFF
 
+    // 트래픽이 없어졌으니 이제 무선을 재워도 안전하다. 여기가 크게 아끼는 구간.
+    applyWifiPowerSave(false);
+
     lockShared();
     shared.paused = true;
     shared.state = ST_PAUSED;
@@ -152,6 +163,7 @@ static void pauseAudio() {
 
 static void resumeAudio() {
     RLOGI("재개 — 오디오 전원 복구");
+    applyWifiPowerSave(true);  // 다시 받아야 하므로 슬립 해제
     digitalWrite(PIN_PWR_AUDIO, LOW);
     delay(100);  // 코덱 전원이 올라올 시간
 
@@ -408,8 +420,9 @@ void setup() {
 
     Serial.begin(115200);
     delay(300);
-    RLOGI("ESP32-S3 ePaper FM Radio  (CPU %u MHz, 모뎀슬립 %s)",
-          (unsigned)getCpuFrequencyMhz(), WIFI_MODEM_SLEEP ? "on" : "off");
+    RLOGI("ESP32-S3 ePaper FM Radio  (CPU %u MHz, 모뎀슬립 재생=%s 유휴=%s)",
+          (unsigned)getCpuFrequencyMhz(), WIFI_SLEEP_WHILE_PLAYING ? "on" : "off",
+          WIFI_SLEEP_WHILE_IDLE ? "on" : "off");
 
     sharedLock = xSemaphoreCreateMutex();
     cmdQueue = xQueueCreate(4, sizeof(Cmd));
@@ -430,9 +443,7 @@ void setup() {
     uiRender(lastUi);
 
     WiFi.mode(WIFI_STA);
-    // 모뎀 슬립은 배터리에서 가장 크게 아끼는 항목이다(30~50mA). 끊김은
-    // 640KB 입력 버퍼가 흡수한다. config.h 에서 되돌릴 수 있다.
-    WiFi.setSleep(WIFI_MODEM_SLEEP ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+    WiFi.setSleep(WIFI_PS_NONE);  // 접속 과정은 확실하게
     WiFi.setAutoReconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -449,6 +460,7 @@ void setup() {
     }
     RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
     setupOta();
+    applyWifiPowerSave(true);  // 곧 재생을 시작하므로 재생용 정책으로
 
     // ── I2S + 코덱 ───────────────────────────────────────────────
     // 코덱을 먼저 설정하려면 MCLK 가 나오고 있어야 하므로 setPinout 이 먼저다.

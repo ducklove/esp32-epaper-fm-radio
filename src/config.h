@@ -42,10 +42,17 @@ constexpr int8_t PIN_PWR_VBAT  = 17;  // 이쪽만 Active-High (1 = ON). 배터�
 // 240MHz 는 과하다. ESP32-S3 의 동작 전류는 클럭에 거의 비례한다.
 constexpr uint32_t CPU_FREQ_MHZ = 160;
 
-// Wi-Fi 모뎀 슬립. 켜면 비콘 사이에 무선을 재워 30~50mA 를 아낀다.
-// 대신 수신이 잠깐씩 끊기는데, 입력 버퍼가 640KB(192kbps 기준 약 27초)라
-// 흡수된다. false 로 두면 항상 깨어 있어 안정적이지만 그만큼 더 먹는다.
-constexpr bool WIFI_MODEM_SLEEP = true;
+// Wi-Fi 모뎀 슬립은 상태에 따라 나눠 건다. 이득과 위험이 정반대이기 때문이다.
+//
+//  재생 중  : 스트리밍이라 무선이 어차피 자주 깨어 있어 절감폭이 작은 반면,
+//             수신이 밀리면 입력 버퍼가 마르고 소리가 끊긴다. 그래서 끈다.
+//  일시정지 : 트래픽이 없어 비콘 간격 내내 잘 수 있다. 여기가 실제로 크게
+//             아끼는 구간이다(대기 100mA 대 -> 15~20mA). 그래서 켠다.
+//
+// 재생 중에도 아끼고 싶으면 WIFI_SLEEP_WHILE_PLAYING 을 true 로. 대신 1분
+// 상태 로그의 '버퍼 %' 가 떨어지지 않는지 지켜봐야 한다.
+constexpr bool WIFI_SLEEP_WHILE_PLAYING = false;
+constexpr bool WIFI_SLEEP_WHILE_IDLE    = true;
 
 // ── 배터리 전압 ADC ───────────────────────────────────────────────
 // Waveshare 01_ADC_Test: ADC1_CH3 = GPIO4, 12dB 감쇠, 12bit, 읽은 값 x2 (1:2 분압)

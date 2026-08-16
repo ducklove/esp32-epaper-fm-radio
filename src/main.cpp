@@ -5,11 +5,19 @@
 // ePaper 에는 실제 서울 FM 주파수를 그대로 쓴 아날로그 다이얼을 그린다.
 //
 // 조작 (버튼 2개)
-//   BOOT 짧게       : 다음 채널 (주파수 오름차순)
-//   BOOT 길게       : 이전 채널
-//   PWR  짧게       : 볼륨 +2 (최대에서 다시 0으로)
-//   PWR  길게 0.7초 : 일시정지 / 재개
-//   PWR  길게 2초   : 전원 끔 (딥슬립). 다시 PWR 을 누르면 켜진다.
+//
+//   [라디오 모드]
+//     BOOT 짧게       : 다음 채널 (주파수 오름차순)
+//     BOOT 길게       : 이전 채널
+//     PWR  짧게       : 볼륨 +2 (최대에서 다시 0으로)
+//     PWR  길게 0.7초 : 일시정지 / 재개
+//     PWR  길게 2초   : 시계 모드로
+//
+//   [시계 모드] — 1분마다 깨어나 시각·온습도를 갱신한다
+//     PWR  누름       : 라디오 모드로
+//     BOOT 누름       : 완전한 딥슬립으로 (시계도 멈춘다)
+//
+//   [딥슬립] 아무 버튼이나 누르면 라디오 모드로
 //
 // 스레드 구조
 //   audioTask (core 1, prio 3) : 선국 + audio.loop(). 오디오는 여기서만 만진다.
@@ -572,23 +580,21 @@ void setup() {
         clockTick();
     }
 
-    // 버튼으로 깨웠다면 누른 길이로 갈린다.
-    //   짧게 : 라디오 모드로 켠다
-    //   길게 : 한 단계 더 깊이 — 시계 모드에서 완전한 딥슬립으로
+    // 시계 모드에서 버튼으로 깨웠다면, 어느 버튼이 깨웠는지로 갈린다.
+    //   PWR  : 라디오 모드로 켠다
+    //   BOOT : 완전한 딥슬립으로
+    //
+    // 처음에는 '누른 길이'로 구분했는데 그게 동작하지 않았다. 딥슬립에서
+    // 부팅하는 데만 1초 가까이 걸리는데 그 뒤부터 2초를 재고 있어서, 실제로는
+    // 3초 넘게 눌러야 했다. ext1 은 어느 핀이 깨웠는지 알려주므로 그걸 쓰면
+    // 타이밍에 전혀 기대지 않아도 된다.
     if (wasOff && wakeCause == ESP_SLEEP_WAKEUP_EXT1) {
-        rtc_gpio_deinit((gpio_num_t)PIN_BTN_PWR);
-        rtc_gpio_deinit((gpio_num_t)PIN_BTN_BOOT);
-        pinMode(PIN_BTN_PWR, INPUT_PULLUP);
-        pinMode(PIN_BTN_BOOT, INPUT_PULLUP);
-
-        const uint32_t t0 = millis();
-        while (digitalRead(PIN_BTN_PWR) == LOW && millis() - t0 < kVeryLongPressMs) {
-            delay(20);
-        }
-        if (millis() - t0 >= kVeryLongPressMs) {
-            RLOGI("시계 모드에서 길게 누름 — 완전한 딥슬립으로");
+        const uint64_t who = esp_sleep_get_ext1_wakeup_status();
+        if (who & (1ULL << PIN_BTN_BOOT)) {
+            RLOGI("BOOT 로 깨움 — 완전한 딥슬립으로");
             enterDeepSleepFromClock();  // 돌아오지 않는다
         }
+        RLOGI("PWR 로 깨움 — 라디오 모드로");
     }
 
     // 전원을 새로 넣었거나 짧게 눌러 깨운 것이면 평소대로 켜진다.
@@ -839,7 +845,7 @@ static void clockTick() {
     // initial=false — 패널은 하이버네이트만 됐을 뿐 이전 이미지를 갖고 있다.
     // true 로 부르면 GxEPD2 가 다음 갱신을 전체 갱신으로 승격시켜서, 1분마다
     // 1.4초씩 화면이 번쩍인다.
-    uiBegin(false);
+    uiBegin();
     // 30회(=30분)마다 한 번만 전체 갱신해서 잔상을 턴다.
     uiRenderOff(u, (rtcClockTicks % 30) == 0);
     rtcClockTicks++;
@@ -881,7 +887,7 @@ static void enterDeepSleepFromClock() {
     u.battVolts = battery.readVolts();
     u.battPercent = Battery::voltsToPercent(u.battVolts);
 
-    uiBegin(false);
+    uiBegin();
     uiRenderOff(u, true, true);  // frozen — 시계가 멈춘다는 표시
     sleepAgain(false);
 }

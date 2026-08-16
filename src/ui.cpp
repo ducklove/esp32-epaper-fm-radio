@@ -343,6 +343,10 @@ void drawOffScreen(const UiState& s, bool frozen) {
     display.setCursor(4, 4);
     display.print(last);
 
+    // 버튼이 두 개뿐이라 어느 쪽이 무엇인지 화면에 적어 둔다.
+    display.setCursor(4, H - 8);
+    display.print(frozen ? "PWR: RADIO" : "PWR: RADIO   BOOT: SLEEP");
+
     // 완전한 딥슬립이면 화면이 여기서 멈춘다. 표시가 없으면 시계가 고장난
     // 것처럼 보이므로 검은 배지를 남긴다.
     if (frozen) {

@@ -731,8 +731,9 @@ static void powerOff(bool clockMode, const char* why) {
     UiState off = snapshotUi();
     if (sensor.ok() && sensor.read(&off.tempC, &off.humidity)) {
         off.hasEnv = true;
-        // 방금까지 계속 돌던 상태라 보드가 더워져 있다. 그만큼 빼 준다.
-        off.tempC -= SHTC3_TEMP_OFFSET_RUN_C;
+        off.tempC -= SHTC3_TEMP_OFFSET_C;
+        // 방금까지 재생 중이라 보드가 더워져 있어서 이 한 프레임은 실제보다
+        // 높게 나온다. 1분 뒤 시계 갱신이 식은 값으로 덮어쓴다.
     }
     uiRenderOff(off, true, !clockMode);  // 들어갈 때 한 번은 깨끗하게
 
@@ -826,9 +827,7 @@ static void clockTick() {
     }
     float rawTemp = 0.0f;
     u.hasEnv = sensor.read(&rawTemp, &u.humidity);
-    // 1분 중 1초만 깨어 있어 자체 발열이 거의 없다. 재생 중과 같은 값을 빼면
-    // 오히려 실제보다 낮게 나온다.
-    u.tempC = rawTemp - SHTC3_TEMP_OFFSET_IDLE_C;
+    u.tempC = rawTemp - SHTC3_TEMP_OFFSET_C;
     u.battVolts = battery.readVolts();
     u.battPercent = Battery::voltsToPercent(u.battVolts);
 
@@ -878,7 +877,7 @@ static void enterDeepSleepFromClock() {
     }
     float rawTemp = 0.0f;
     u.hasEnv = sensor.read(&rawTemp, &u.humidity);
-    u.tempC = rawTemp - SHTC3_TEMP_OFFSET_IDLE_C;
+    u.tempC = rawTemp - SHTC3_TEMP_OFFSET_C;
     u.battVolts = battery.readVolts();
     u.battPercent = Battery::voltsToPercent(u.battVolts);
 

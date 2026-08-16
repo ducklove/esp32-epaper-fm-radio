@@ -8,6 +8,7 @@
 #include <Fonts/FreeSansBold24pt7b.h>
 
 #include "config.h"
+#include "photo.h"
 #include "stations.h"
 
 // Waveshare 1.54inch e-Paper V2 = SSD1681 200x200.
@@ -445,6 +446,75 @@ void drawOffScreen(const UiState& s, bool frozen) {
     // 버튼이 두 개뿐이라 어느 쪽이 무엇인지 화면에 적어 둔다.
     display.setCursor(4, H - 8);
     display.print("PWR: RADIO   BOOT: SLEEP");
+}
+
+void uiRenderPhoto() {
+    // 화면을 통째로 바꾸는 것이라 전체 갱신이 맞다. 어차피 딥슬립에 들어가면
+    // 다음 갱신까지 한참이므로 1.4초를 아낄 이유가 없다.
+    display.setFullWindow();
+    sinceFullRefresh = 0;
+
+    display.firstPage();
+    do {
+        display.fillScreen(GxEPD_WHITE);
+        display.drawBitmap(0, 0, kPhoto, kPhoto_W, kPhoto_H, GxEPD_BLACK);
+    } while (display.nextPage());
+
+    display.hibernate();
+}
+
+void uiRenderWifiSetup(const UiState& s) {
+    display.setFullWindow();
+    sinceFullRefresh = 0;
+
+    display.firstPage();
+    do {
+        display.fillScreen(GxEPD_WHITE);
+        display.setTextColor(GxEPD_BLACK);
+
+        display.fillRect(0, 0, W, 22, GxEPD_BLACK);
+        display.setTextColor(GxEPD_WHITE);
+        display.setFont(&FreeSansBold9pt7b);
+        display.setCursor(6, 16);
+        display.print("WI-FI SETUP");
+        display.setTextColor(GxEPD_BLACK);
+
+        display.setFont(nullptr);
+        display.setTextSize(1);
+
+        display.setCursor(6, 36);
+        display.print("1. Connect to this Wi-Fi:");
+        display.setFont(&FreeSansBold9pt7b);
+        display.setCursor(14, 60);
+        display.print(s.apSsid);
+        display.setFont(nullptr);
+        display.setCursor(14, 70);
+        display.print("pw: ");
+        display.print(s.apPass);
+
+        display.drawFastHLine(6, 86, W - 12, GxEPD_BLACK);
+
+        display.setCursor(6, 96);
+        display.print("2. Open in browser:");
+        display.setFont(&FreeSansBold9pt7b);
+        display.setCursor(14, 120);
+        display.print(s.apUrl);
+        display.setFont(nullptr);
+        display.setCursor(14, 130);
+        display.print("(or any address)");
+
+        display.drawFastHLine(6, 146, W - 12, GxEPD_BLACK);
+
+        display.setCursor(6, 156);
+        display.print("3. Enter SSID and password");
+        display.setCursor(6, 168);
+        display.print("   then save. It reboots.");
+
+        display.setCursor(6, H - 10);
+        display.print("2.4GHz only. Times out in 5 min.");
+    } while (display.nextPage());
+
+    display.hibernate();
 }
 
 void uiRenderOffToPrevious(const UiState& s, bool frozen) {

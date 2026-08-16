@@ -1,0 +1,949 @@
+<title>93.1 ePaper Radio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ── 토큰 ────────────────────────────────────────────────────────
+     색은 기기에서 가져왔다. e-paper 패널은 순백이 아니라 차가운 회녹색이고,
+     잉크도 순검정이 아니다. 강조색은 다이얼 바늘 하나뿐 — 벽돌색.        */
+  :root {
+    --paper:        #E9EAE4;
+    --paper-raised: #F3F4EF;
+    --paper-sunk:   #DFE1D9;
+    --ink:          #191B19;
+    --ink-soft:     #43473F;
+    --muted:        #6C7168;
+    --rule:         #C6C9BE;
+    --rule-soft:    #D8DBD1;
+    --needle:       #A8402A;
+    --needle-soft:  #C46B52;
+
+    --sans: "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic",
+            system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+
+    --s1: .25rem; --s2: .5rem; --s3: .75rem; --s4: 1rem;
+    --s5: 1.5rem; --s6: 2rem; --s7: 3rem; --s8: 4.5rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:        #14160F;
+      --paper-raised: #1D2018;
+      --paper-sunk:   #0E100A;
+      --ink:          #E4E6DC;
+      --ink-soft:     #B9BDB0;
+      --muted:        #878C7E;
+      --rule:         #33372C;
+      --rule-soft:    #262A20;
+      --needle:       #D4693F;
+      --needle-soft:  #A85433;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:        #14160F;
+    --paper-raised: #1D2018;
+    --paper-sunk:   #0E100A;
+    --ink:          #E4E6DC;
+    --ink-soft:     #B9BDB0;
+    --muted:        #878C7E;
+    --rule:         #33372C;
+    --rule-soft:    #262A20;
+    --needle:       #D4693F;
+    --needle-soft:  #A85433;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 var(--s5) var(--s8);
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--s6);
+  }
+  @media (min-width: 1000px) {
+    .wrap { grid-template-columns: 190px minmax(0, 1fr); gap: var(--s7); }
+  }
+
+  /* ── 헤더 ───────────────────────────────────────────────────── */
+  header.masthead {
+    border-bottom: 1px solid var(--rule);
+    background: var(--paper-raised);
+  }
+  .masthead-inner {
+    max-width: 1180px; margin: 0 auto;
+    padding: var(--s5) var(--s5) var(--s4);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 var(--s3);
+  }
+  h1 {
+    font-size: clamp(1.9rem, 4.4vw, 2.9rem);
+    line-height: 1.12;
+    letter-spacing: -.022em;
+    font-weight: 800;
+    margin: 0 0 var(--s3);
+    text-wrap: balance;
+  }
+  .standfirst {
+    max-width: 62ch; margin: 0;
+    color: var(--ink-soft);
+    font-size: 1.02rem;
+  }
+
+  /* ── 다이얼 ─────────────────────────────────────────────────── */
+  .dial { margin: var(--s5) 0 0; }
+  .dial svg { display: block; width: 100%; height: auto; }
+
+  /* ── 목차 ───────────────────────────────────────────────────── */
+  nav.toc { font-family: var(--mono); font-size: .78rem; }
+  @media (min-width: 1000px) {
+    nav.toc { position: sticky; top: var(--s5); align-self: start; }
+  }
+  nav.toc ol { list-style: none; margin: 0; padding: 0;
+                display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
+  @media (min-width: 1000px) {
+    nav.toc ol { flex-direction: column; gap: var(--s2); }
+  }
+  nav.toc a {
+    color: var(--muted); text-decoration: none;
+    border-bottom: 1px solid transparent; padding-bottom: 1px;
+  }
+  nav.toc a:hover, nav.toc a:focus-visible {
+    color: var(--ink); border-bottom-color: var(--needle);
+  }
+
+  main { min-width: 0; padding-top: var(--s6); }
+  section { margin: 0 0 var(--s8); scroll-margin-top: var(--s5); }
+  section > * { max-width: 68ch; }
+  section > figure, section > .tablewrap, section > .grid { max-width: none; }
+
+  h2 {
+    font-size: 1.55rem; font-weight: 750; letter-spacing: -.015em;
+    margin: 0 0 var(--s2); padding-bottom: var(--s3);
+    border-bottom: 2px solid var(--ink);
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 1.06rem; font-weight: 700; letter-spacing: -.008em;
+    margin: var(--s6) 0 var(--s2);
+  }
+  h4 {
+    font-family: var(--mono); font-size: .76rem; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+    margin: var(--s5) 0 var(--s2);
+  }
+  p { margin: 0 0 var(--s4); }
+  a { color: var(--ink); text-decoration-color: var(--needle-soft);
+      text-underline-offset: 3px; }
+  strong { font-weight: 700; }
+  code {
+    font-family: var(--mono); font-size: .86em;
+    background: var(--paper-sunk); border: 1px solid var(--rule-soft);
+    border-radius: 3px; padding: .08em .34em;
+  }
+  ul { margin: 0 0 var(--s4); padding-left: 1.15rem; }
+  li { margin-bottom: var(--s2); }
+  li::marker { color: var(--muted); }
+
+  .lede {
+    font-size: 1.06rem; color: var(--ink-soft);
+    border-left: 2px solid var(--needle); padding-left: var(--s4);
+    margin-bottom: var(--s5);
+  }
+
+  /* ── 표 ─────────────────────────────────────────────────────── */
+  .tablewrap { overflow-x: auto; margin: 0 0 var(--s5);
+               border: 1px solid var(--rule); background: var(--paper-raised); }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  caption {
+    text-align: left; font-family: var(--mono); font-size: .72rem;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+    padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule);
+  }
+  th, td { text-align: left; padding: .55rem var(--s4);
+           border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: .72rem; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums;
+                   white-space: nowrap; }
+  td.pin { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .hot { color: var(--needle); font-weight: 700; }
+
+  /* ── 도해 ───────────────────────────────────────────────────── */
+  figure { margin: 0 0 var(--s5); }
+  figure svg { display: block; width: 100%; height: auto;
+               color: var(--ink-soft); }
+  figcaption {
+    font-size: .84rem; color: var(--muted); margin-top: var(--s3);
+    padding-top: var(--s2); border-top: 1px solid var(--rule-soft);
+    max-width: 68ch;
+  }
+
+  /* ── 카드 ───────────────────────────────────────────────────── */
+  .grid { display: grid; gap: var(--s4); margin-bottom: var(--s5);
+          grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .card {
+    border: 1px solid var(--rule); background: var(--paper-raised);
+    padding: var(--s4);
+  }
+  .card .k {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 var(--s2);
+  }
+  .card .v {
+    font-family: var(--mono); font-size: 1.45rem; font-weight: 600;
+    font-variant-numeric: tabular-nums; margin: 0 0 var(--s1);
+    letter-spacing: -.02em;
+  }
+  .card .n { font-size: .84rem; color: var(--muted); margin: 0; line-height: 1.5; }
+
+  .note {
+    border: 1px solid var(--rule); border-left: 3px solid var(--needle);
+    background: var(--paper-raised);
+    padding: var(--s4); margin: 0 0 var(--s5); max-width: 68ch;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .note .t {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--needle); margin: 0 0 var(--s2);
+  }
+
+  pre {
+    font-family: var(--mono); font-size: .82rem; line-height: 1.6;
+    background: var(--paper-sunk); border: 1px solid var(--rule);
+    padding: var(--s4); overflow-x: auto; margin: 0 0 var(--s5);
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+  footer {
+    border-top: 1px solid var(--rule); margin-top: var(--s6);
+    padding: var(--s5) 0 0; color: var(--muted); font-size: .84rem;
+  }
+  :focus-visible { outline: 2px solid var(--needle); outline-offset: 2px; }
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <p class="eyebrow">Waveshare ESP32-S3-ePaper-1.54 · 펌웨어 문서</p>
+    <h1>93.1 ePaper Radio</h1>
+    <p class="standfirst">
+      FM 튜너가 없는 보드로 만든 FM 라디오. 방송사 스트림을 Wi-Fi 로 받아
+      온보드 스피커로 내보내고, 200×200 전자종이에는 실제 서울 FM 주파수를 쓴
+      아날로그 다이얼을 그린다. 사용법 · 프로그램 구조 · 기술 사양.
+    </p>
+
+    <div class="dial">
+      <svg viewBox="0 0 960 176" role="img"
+           aria-label="88에서 108 메가헤르츠 다이얼. 15개 채널이 표시되어 있고 바늘은 93.1 KBS 클래식FM을 가리킨다.">
+        <!-- 바늘: 현재 선국. 강조색은 이 문서에서 여기와 현재값 표시에만 쓴다 -->
+        <g stroke="var(--needle)" fill="var(--needle)">
+          <polygon points="266.2,44 282.2,44 274.2,58"/>
+          <line x1="274.2" y1="44" x2="274.2" y2="122" stroke-width="2"/>
+        </g>
+        <text x="274.2" y="34" text-anchor="middle" fill="var(--needle)"
+              font-family="ui-monospace, monospace" font-size="13" font-weight="600">93.1 KBS CLASSIC FM</text>
+
+        <!-- 눈금선 -->
+        <line x1="60" y1="122" x2="900" y2="122" stroke="currentColor" stroke-width="1.5"/>
+
+        <!-- 1MHz 눈금 -->
+        <g stroke="currentColor" stroke-width="1" opacity=".55">
+          <line x1="60"  y1="122" x2="60"  y2="112"/><line x1="102" y1="122" x2="102" y2="116"/>
+          <line x1="144" y1="122" x2="144" y2="112"/><line x1="186" y1="122" x2="186" y2="116"/>
+          <line x1="228" y1="122" x2="228" y2="116"/><line x1="270" y1="122" x2="270" y2="116"/>
+          <line x1="312" y1="122" x2="312" y2="116"/><line x1="354" y1="122" x2="354" y2="112"/>
+          <line x1="396" y1="122" x2="396" y2="116"/><line x1="438" y1="122" x2="438" y2="116"/>
+          <line x1="480" y1="122" x2="480" y2="116"/><line x1="522" y1="122" x2="522" y2="116"/>
+          <line x1="564" y1="122" x2="564" y2="112"/><line x1="606" y1="122" x2="606" y2="116"/>
+          <line x1="648" y1="122" x2="648" y2="116"/><line x1="690" y1="122" x2="690" y2="116"/>
+          <line x1="732" y1="122" x2="732" y2="116"/><line x1="774" y1="122" x2="774" y2="112"/>
+          <line x1="816" y1="122" x2="816" y2="116"/><line x1="858" y1="122" x2="858" y2="116"/>
+          <line x1="900" y1="122" x2="900" y2="112"/>
+        </g>
+
+        <!-- 5MHz 숫자 -->
+        <g fill="currentColor" font-family="ui-monospace, monospace" font-size="12"
+           text-anchor="middle" opacity=".75">
+          <text x="60"  y="142">88</text><text x="144" y="142">90</text>
+          <text x="354" y="142">95</text><text x="564" y="142">100</text>
+          <text x="774" y="142">105</text><text x="900" y="142">108</text>
+        </g>
+
+        <!-- 채널 15개 -->
+        <g fill="currentColor">
+          <circle cx="106.2" cy="104" r="3"/><circle cx="223.8" cy="104" r="3"/>
+          <circle cx="274.2" cy="104" r="3"/><circle cx="307.8" cy="104" r="3"/>
+          <circle cx="333"   cy="104" r="3"/><circle cx="391.8" cy="104" r="3"/>
+          <circle cx="450.6" cy="104" r="3"/><circle cx="484.2" cy="104" r="3"/>
+          <circle cx="526.2" cy="104" r="3"/><circle cx="711"   cy="104" r="3"/>
+          <circle cx="753"   cy="104" r="3"/><circle cx="769.8" cy="104" r="3"/>
+          <circle cx="820.2" cy="104" r="3"/><circle cx="853.8" cy="104" r="3"/>
+          <circle cx="887.4" cy="104" r="3"/>
+        </g>
+
+        <text x="60" y="166" fill="currentColor" font-family="ui-monospace, monospace"
+              font-size="11" opacity=".6">점 = 등록된 채널 15개 · 서울 기준 실제 FM 주파수</text>
+      </svg>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="toc" aria-label="목차">
+    <ol>
+      <li><a href="#what">이게 무엇인가</a></li>
+      <li><a href="#use">사용 설명서</a></li>
+      <li><a href="#modes">세 가지 모드</a></li>
+      <li><a href="#channels">채널</a></li>
+      <li><a href="#wifi">Wi-Fi 설정</a></li>
+      <li><a href="#arch">프로그램 구조</a></li>
+      <li><a href="#spec">기술 사양</a></li>
+      <li><a href="#traps">겪은 함정</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="what">
+      <h2>이게 무엇인가</h2>
+      <p class="lede">
+        이 보드에는 FM 튜너 칩이 없다. 88~108MHz 를 받는 회로가 아예 없고
+        ESP32-S3 의 무선은 2.4GHz Wi-Fi/BLE 전용이라, 보드 단독으로 전파를
+        수신하는 것은 물리적으로 불가능하다.
+      </p>
+      <p>
+        그래서 이 펌웨어는 방송사 HLS 스트림을 Wi-Fi 로 받아 재생한다. 나오는
+        소리는 실제 FM 방송 그대로이고, 화면에는 각 채널의 진짜 서울 FM 주파수를
+        쓴 아날로그 다이얼을 그린다. 겉보기와 조작감은 FM 라디오이되, 신호는
+        인터넷에서 온다.
+      </p>
+      <p>
+        진짜로 전파를 받으려면 RDA5807M 같은 I2C FM 튜너 모듈을 확장 헤더에
+        물려야 한다. 블루투스 스피커도 불가능하다 — A2DP 는 Classic Bluetooth
+        위에서만 동작하는데 ESP32-S3 는 BLE 전용이다.
+      </p>
+
+      <div class="grid">
+        <div class="card">
+          <p class="k">채널</p>
+          <p class="v">15</p>
+          <p class="n">KBS · MBC · SBS · CBS · EBS · YTN · 국악 · 극동</p>
+        </div>
+        <div class="card">
+          <p class="k">화면</p>
+          <p class="v">200×200</p>
+          <p class="n">SSD1681 전자종이, 1비트 흑백</p>
+        </div>
+        <div class="card">
+          <p class="k">재생 시간</p>
+          <p class="v">1h45</p>
+          <p class="n">300mAh 셀 기준. 시계 모드 10~14일</p>
+        </div>
+        <div class="card">
+          <p class="k">업데이트</p>
+          <p class="v">OTA</p>
+          <p class="n">USB 없이 Wi-Fi 로 펌웨어 교체</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="use">
+      <h2>사용 설명서</h2>
+      <p>
+        버튼은 <code>BOOT</code> 와 <code>PWR</code> 두 개뿐이다. 그래서 같은
+        버튼이 모드마다 다른 일을 한다. 아래 표가 전부다.
+      </p>
+
+      <div class="tablewrap">
+        <table>
+          <caption>버튼 조작</caption>
+          <thead>
+            <tr><th>모드</th><th>버튼</th><th>누름</th><th>동작</th></tr>
+          </thead>
+          <tbody>
+            <tr><td rowspan="5">라디오</td><td>BOOT</td><td class="num">짧게</td><td>다음 채널 (주파수 오름차순)</td></tr>
+            <tr><td>BOOT</td><td class="num">0.7초</td><td>이전 채널</td></tr>
+            <tr><td>BOOT</td><td class="num">2초</td><td>Wi-Fi 설정 포털 열기</td></tr>
+            <tr><td>PWR</td><td class="num">짧게</td><td>볼륨 +2 (최대에서 다시 0으로)</td></tr>
+            <tr><td>PWR</td><td class="num">0.7초</td><td>일시정지 / 재개</td></tr>
+            <tr><td rowspan="2">라디오</td><td>PWR</td><td class="num">2초</td><td class="hot">시계 모드로</td></tr>
+            <tr><td colspan="3" style="color:var(--muted)">— 아래부터는 화면이 꺼진 상태 —</td></tr>
+            <tr><td rowspan="2">시계</td><td>PWR</td><td class="num">누름</td><td>라디오로 복귀</td></tr>
+            <tr><td>BOOT</td><td class="num">누름</td><td class="hot">딥슬립으로</td></tr>
+            <tr><td rowspan="2">딥슬립</td><td>PWR</td><td class="num">누름</td><td>라디오로 복귀</td></tr>
+            <tr><td>BOOT</td><td class="num">누름</td><td>사진 ↔ 그 순간 측정한 온습도·시각</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <p class="t">주의</p>
+        <p>
+          라디오 모드에서 채널을 넘기려다 <strong>2초를 넘기면 Wi-Fi 설정
+          포털이 열린다.</strong> 포털은 5분 뒤 저절로 닫히고 원래대로 돌아오니
+          잘못 열었어도 기다리면 된다.
+        </p>
+      </div>
+
+      <h3>화면 읽는 법</h3>
+      <p>
+        라디오 화면 상단 왼쪽은 <strong>시계</strong>, 오른쪽은 Wi-Fi 신호 세기와
+        배터리 잔량이다. Wi-Fi 막대는 장식이 아니라 실제 RSSI 를 반영한다 —
+        −60dBm 이상 3칸, −70 이상 2칸, −80 이상 1칸.
+      </p>
+      <p>
+        가운데 큰 숫자가 주파수, 그 아래가 채널명, 그 아래 다이얼의 바늘이 현재
+        위치다. 맨 아래 줄은 상태(<code>ON AIR</code>, <code>BUFFERING</code>,
+        <code>TUNING</code>, <code>PAUSED</code>, <code>ERROR</code>)와 비트레이트,
+        배터리 전압이다.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="modes">
+      <h2>세 가지 모드</h2>
+      <p>
+        <strong>PWR 을 길게 누를수록 더 깊이 잔다</strong>는 한 가지 규칙으로
+        묶여 있다. 돌아올 때는 어느 상태에서든 PWR 이다.
+      </p>
+
+      <figure>
+        <svg viewBox="0 0 900 260" role="img"
+             aria-label="라디오 모드에서 PWR 2초를 누르면 시계 모드로, 시계 모드에서 BOOT를 누르면 딥슬립으로 간다. 어느 쪽에서든 PWR을 누르면 라디오로 돌아온다.">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+            </marker>
+            <marker id="arh" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--needle)"/>
+            </marker>
+          </defs>
+
+          <!-- 상태 3개 -->
+          <g stroke="currentColor" fill="none" stroke-width="1.5">
+            <rect x="20"  y="60" width="230" height="86"/>
+            <rect x="335" y="60" width="230" height="86"/>
+            <rect x="650" y="60" width="230" height="86"/>
+          </g>
+          <g fill="currentColor" text-anchor="middle" font-family="ui-monospace, monospace">
+            <text x="135" y="92"  font-size="15" font-weight="600">라디오</text>
+            <text x="450" y="92"  font-size="15" font-weight="600">시계</text>
+            <text x="765" y="92"  font-size="15" font-weight="600">딥슬립</text>
+            <text x="135" y="116" font-size="12" opacity=".7">스트리밍 재생</text>
+            <text x="450" y="116" font-size="12" opacity=".7">1분마다 갱신</text>
+            <text x="765" y="116" font-size="12" opacity=".7">화면 정지</text>
+            <text x="135" y="136" font-size="13" font-weight="600">~120 mA</text>
+            <text x="450" y="136" font-size="13" font-weight="600">~1 mA</text>
+            <text x="765" y="136" font-size="13" font-weight="600">수십 µA</text>
+          </g>
+
+          <!-- 더 깊이: 오른쪽으로 -->
+          <g stroke="var(--needle)" stroke-width="1.5" fill="none">
+            <line x1="250" y1="88" x2="330" y2="88" marker-end="url(#arh)"/>
+            <line x1="565" y1="88" x2="645" y2="88" marker-end="url(#arh)"/>
+          </g>
+          <g fill="var(--needle)" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">
+            <text x="290" y="78">PWR 2초</text>
+            <text x="605" y="78">BOOT</text>
+          </g>
+
+          <!-- 복귀: 아래로 크게 돌아 -->
+          <g stroke="currentColor" stroke-width="1.5" fill="none">
+            <path d="M 450 146 L 450 190 L 135 190 L 135 150" marker-end="url(#ar)"/>
+            <path d="M 765 146 L 765 220 L 135 220 L 135 150" marker-end="url(#ar)"/>
+          </g>
+          <g fill="currentColor" font-family="ui-monospace, monospace" font-size="12">
+            <text x="300" y="184" text-anchor="middle">PWR</text>
+            <text x="450" y="214" text-anchor="middle">PWR</text>
+          </g>
+
+          <!-- 딥슬립 자기 순환 -->
+          <g stroke="currentColor" stroke-width="1.5" fill="none">
+            <path d="M 880 100 L 900 100 L 900 40 L 765 40 L 765 58" marker-end="url(#ar)"/>
+          </g>
+          <text x="828" y="32" fill="currentColor" text-anchor="middle"
+                font-family="ui-monospace, monospace" font-size="12">BOOT: 사진 ↔ 측정값</text>
+        </svg>
+        <figcaption>
+          모드 전이. 붉은 화살표가 “한 단계 더 깊이”, 검은 화살표가 복귀다.
+          소비 전류는 계산값이며 300mAh 셀 기준 각각 약 1시간 45분 · 10~14일 ·
+          수개월에 해당한다.
+        </figcaption>
+      </figure>
+
+      <h3>시계 모드</h3>
+      <p>
+        1분마다 잠깐 깨어나 시각·날짜·온습도·배터리를 갱신하고 다시 잠든다.
+        <strong>Wi-Fi 는 절대 올리지 않는다</strong> — 그게 전력의 대부분이라
+        올리는 순간 시계 모드의 의미가 없어진다.
+      </p>
+      <p>
+        갱신은 부분 갱신이라 깜빡이지 않는다(0.36초). 잔상 제거용 전체 갱신은
+        하루 한 번만 한다.
+      </p>
+
+      <h3>딥슬립</h3>
+      <p>
+        화면이 그 시점에서 멈춘다. 멈춘 시계는 고장난 시계로 보이므로 시각과
+        온습도를 지우고 <strong>사진으로 화면을 채운다.</strong> BOOT 를 누르면
+        그 순간 측정한 값을 <code>AT HH:MM</code> 과 함께 보여주고, 한 번 더
+        누르면 사진으로 돌아온다.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="channels">
+      <h2>채널</h2>
+      <p>
+        KBS · MBC · SBS 의 스트림 주소에는 만료되는 서명이 붙어 있어, 선국할
+        때마다 방송사 API 를 다시 호출해 새 주소를 받는다. 나머지는 고정 주소다.
+      </p>
+      <p>
+        화면에 쓸 한글 폰트가 없어 채널명은 로마자로 적혀 있다.
+      </p>
+
+      <div class="tablewrap">
+        <table>
+          <caption>등록된 채널 · 주파수 오름차순</caption>
+          <thead>
+            <tr><th class="num">MHz</th><th>채널</th><th>화면 표기</th><th>주소 방식</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="num">89.1</td><td>KBS 2FM 쿨FM</td><td>KBS Cool FM</td><td>KBS API</td></tr>
+            <tr><td class="num">91.9</td><td>MBC FM4U</td><td>MBC FM4U</td><td>텍스트 API</td></tr>
+            <tr><td class="num hot">93.1</td><td>KBS 1FM 클래식FM</td><td>KBS Classic FM</td><td>KBS API</td></tr>
+            <tr><td class="num">93.9</td><td>CBS 음악FM</td><td>CBS Music FM</td><td>고정</td></tr>
+            <tr><td class="num">94.5</td><td>YTN 라디오</td><td>YTN Radio</td><td>고정</td></tr>
+            <tr><td class="num">95.9</td><td>MBC 표준FM</td><td>MBC Standard FM</td><td>텍스트 API</td></tr>
+            <tr><td class="num">97.3</td><td>KBS 1라디오</td><td>KBS Radio 1</td><td>KBS API</td></tr>
+            <tr><td class="num">98.1</td><td>CBS 표준FM</td><td>CBS Standard FM</td><td>고정</td></tr>
+            <tr><td class="num">99.1</td><td>국악방송</td><td>Gugak FM</td><td>고정</td></tr>
+            <tr><td class="num">103.5</td><td>SBS 러브FM</td><td>SBS Love FM</td><td>SBS API</td></tr>
+            <tr><td class="num">104.5</td><td>EBS FM</td><td>EBS FM</td><td>고정</td></tr>
+            <tr><td class="num">104.9</td><td>KBS 3라디오</td><td>KBS Radio 3</td><td>KBS API</td></tr>
+            <tr><td class="num">106.1</td><td>KBS 2라디오 해피FM</td><td>KBS Happy FM</td><td>KBS API</td></tr>
+            <tr><td class="num">106.9</td><td>극동방송</td><td>FEBC Seoul</td><td>고정</td></tr>
+            <tr><td class="num">107.7</td><td>SBS 파워FM</td><td>SBS Power FM</td><td>SBS API</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <p class="t">채널이 안 나올 때</p>
+        <p>
+          화면에 <code>NO STREAM</code> 이 뜨면 방송사 API 가 응답하지 않은
+          것이다. 기기 문제가 아니며 BOOT 로 다른 채널로 넘기면 된다. 8초마다
+          자동으로 재시도하므로 방송사 쪽이 복구되면 알아서 다시 붙는다.
+        </p>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="wifi">
+      <h2>Wi-Fi 설정</h2>
+      <p>
+        접속 정보는 기기 안(NVS)에 저장된다. 펌웨어에 박아 둔 값은 저장된 게
+        없을 때의 초기값으로만 쓰이므로, <strong>다른 곳에 들고 가도 재빌드 없이
+        바꿀 수 있다.</strong>
+      </p>
+      <p>
+        설정 화면은 두 경우에 열린다 — Wi-Fi 접속에 실패했을 때 자동으로, 또는
+        라디오 모드에서 <strong>BOOT 를 2초 이상</strong> 눌렀을 때.
+      </p>
+
+      <h4>설정 순서</h4>
+      <div class="tablewrap">
+        <table>
+          <caption>포털이 열린 뒤</caption>
+          <thead><tr><th class="num">단계</th><th>할 일</th></tr></thead>
+          <tbody>
+            <tr><td class="num">1</td><td>폰이나 노트북에서 Wi-Fi <code>esp32-radio-setup</code> 에 접속. 암호는 <code>fmradio1234</code></td></tr>
+            <tr><td class="num">2</td><td>브라우저에서 <code>http://192.168.4.1</code> 열기. 캡티브 포털이라 아무 주소나 열어도 설정 화면으로 온다</td></tr>
+            <tr><td class="num">3</td><td>SSID 와 비밀번호를 넣고 저장. 기기가 재시작하며 새 Wi-Fi 에 붙는다</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        5분간 아무 입력이 없으면 포털이 닫히고 원래 상태로 돌아간다.
+        <strong>2.4GHz 만 지원한다</strong> — ESP32-S3 에는 5GHz 무선이 없다.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="arch">
+      <h2>프로그램 구조</h2>
+
+      <h3>태스크 배치</h3>
+      <p>
+        전자종이 한 번 갱신에 0.36~1.4초가 걸린다. 그동안 오디오가 멈추면 소리가
+        끊기므로, <strong>오디오를 더 높은 우선순위의 별도 태스크에 두고 화면은
+        낮은 우선순위에서 그린다.</strong> 화면을 그리는 도중에도 오디오 태스크가
+        선점해 버퍼를 채운다.
+      </p>
+
+      <figure>
+        <svg viewBox="0 0 900 330" role="img"
+             aria-label="방송사 API에서 받은 주소로 HLS 스트림을 받아 AAC로 디코딩하고 I2S로 ES8311 코덱에 보내 스피커로 출력한다. 오디오 경로는 우선순위 3의 audioTask에서, 화면과 버튼은 우선순위 1의 loopTask에서 처리한다.">
+          <defs>
+            <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <!-- audioTask 영역 -->
+          <rect x="14" y="44" width="872" height="118" fill="none"
+                stroke="currentColor" stroke-width="1" stroke-dasharray="4 4" opacity=".5"/>
+          <text x="26" y="36" fill="currentColor" font-family="ui-monospace, monospace"
+                font-size="12" font-weight="600">audioTask · core 1 · 우선순위 3</text>
+
+          <!-- loopTask 영역 -->
+          <rect x="14" y="212" width="872" height="96" fill="none"
+                stroke="currentColor" stroke-width="1" stroke-dasharray="4 4" opacity=".5"/>
+          <text x="26" y="204" fill="currentColor" font-family="ui-monospace, monospace"
+                font-size="12" font-weight="600">loopTask · core 1 · 우선순위 1</text>
+
+          <!-- 오디오 체인 -->
+          <g stroke="currentColor" fill="none" stroke-width="1.5">
+            <rect x="30"  y="76" width="132" height="54"/>
+            <rect x="212" y="76" width="132" height="54"/>
+            <rect x="394" y="76" width="132" height="54"/>
+            <rect x="576" y="76" width="132" height="54"/>
+            <rect x="758" y="76" width="112" height="54"/>
+          </g>
+          <g fill="currentColor" text-anchor="middle" font-family="ui-monospace, monospace">
+            <text x="96"  y="100" font-size="12" font-weight="600">방송사 API</text>
+            <text x="96"  y="118" font-size="11" opacity=".7">주소 해석</text>
+            <text x="278" y="100" font-size="12" font-weight="600">HLS + TLS</text>
+            <text x="278" y="118" font-size="11" opacity=".7">640KB 버퍼</text>
+            <text x="460" y="100" font-size="12" font-weight="600">AAC 디코딩</text>
+            <text x="460" y="118" font-size="11" opacity=".7">48kHz 스테레오</text>
+            <text x="642" y="100" font-size="12" font-weight="600">ES8311</text>
+            <text x="642" y="118" font-size="11" opacity=".7">I2S 32bit</text>
+            <text x="814" y="100" font-size="12" font-weight="600">스피커</text>
+            <text x="814" y="118" font-size="11" opacity=".7">PA · GPIO46</text>
+          </g>
+          <g stroke="currentColor" stroke-width="1.5" fill="none">
+            <line x1="162" y1="103" x2="208" y2="103" marker-end="url(#a2)"/>
+            <line x1="344" y1="103" x2="390" y2="103" marker-end="url(#a2)"/>
+            <line x1="526" y1="103" x2="572" y2="103" marker-end="url(#a2)"/>
+            <line x1="708" y1="103" x2="754" y2="103" marker-end="url(#a2)"/>
+          </g>
+
+          <!-- loopTask 쪽 -->
+          <g stroke="currentColor" fill="none" stroke-width="1.5">
+            <rect x="30"  y="236" width="150" height="52"/>
+            <rect x="230" y="236" width="150" height="52"/>
+            <rect x="430" y="236" width="150" height="52"/>
+            <rect x="630" y="236" width="150" height="52"/>
+          </g>
+          <g fill="currentColor" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">
+            <text x="105" y="258">버튼 폴링</text><text x="105" y="276" font-size="11" opacity=".7">20ms</text>
+            <text x="305" y="258">ePaper</text><text x="305" y="276" font-size="11" opacity=".7">0.36~1.4초</text>
+            <text x="505" y="258">배터리 · RSSI</text><text x="505" y="276" font-size="11" opacity=".7">1분</text>
+            <text x="705" y="258">OTA 대기</text><text x="705" y="276" font-size="11" opacity=".7">ArduinoOTA</text>
+          </g>
+
+          <!-- 큐 -->
+          <line x1="105" y1="232" x2="105" y2="166" stroke="var(--needle)"
+                stroke-width="1.5" marker-end="url(#a2)" fill="none"/>
+          <text x="118" y="192" fill="var(--needle)" font-family="ui-monospace, monospace"
+                font-size="12">선국 · 일시정지 명령을 큐로 전달</text>
+        </svg>
+        <figcaption>
+          오디오 경로와 화면 경로의 분리. 오디오는 <code>audioTask</code> 에서만
+          다루고, 화면·버튼은 우선순위가 낮은 <code>loopTask</code> 에서 돈다.
+          두 태스크는 FreeRTOS 큐로만 이야기한다.
+        </figcaption>
+      </figure>
+
+      <h3>부팅 분기</h3>
+      <p>
+        딥슬립에서 깨어날 때 <strong>무엇이 깨웠는지</strong>에 따라 완전히 다른
+        경로로 간다. 타이머가 깨웠으면 Wi-Fi 도 오디오도 올리지 않고 시계만 고치고
+        다시 잠든다.
+      </p>
+
+      <figure>
+        <svg viewBox="0 0 900 300" role="img"
+             aria-label="부팅하면 기상 원인을 확인한다. 타이머면 시계만 갱신하고 다시 잠들고, BOOT 버튼이면 딥슬립으로, PWR 버튼이거나 전원 인가면 라디오 모드로 간다.">
+          <defs>
+            <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <g stroke="currentColor" fill="none" stroke-width="1.5">
+            <rect x="20" y="120" width="180" height="60"/>
+          </g>
+          <text x="110" y="146" fill="currentColor" text-anchor="middle"
+                font-family="ui-monospace, monospace" font-size="13" font-weight="600">부팅</text>
+          <text x="110" y="164" fill="currentColor" text-anchor="middle"
+                font-family="ui-monospace, monospace" font-size="11" opacity=".7">기상 원인 확인</text>
+
+          <g stroke="currentColor" stroke-width="1.5" fill="none">
+            <path d="M 200 150 L 250 150 L 250 46 L 296 46" marker-end="url(#a3)"/>
+            <path d="M 200 150 L 250 150 L 250 150 L 296 150" marker-end="url(#a3)"/>
+            <path d="M 200 150 L 250 150 L 250 254 L 296 254" marker-end="url(#a3)"/>
+          </g>
+          <g fill="currentColor" font-family="ui-monospace, monospace" font-size="12">
+            <text x="258" y="38">TIMER</text>
+            <text x="258" y="142">EXT1 · BOOT</text>
+            <text x="258" y="246">EXT1 · PWR / 전원 인가</text>
+          </g>
+
+          <g stroke="currentColor" fill="none" stroke-width="1.5">
+            <rect x="300" y="20"  width="230" height="52"/>
+            <rect x="300" y="124" width="230" height="52"/>
+            <rect x="300" y="228" width="230" height="52"/>
+          </g>
+          <g fill="currentColor" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">
+            <text x="415" y="42">시계 갱신</text>
+            <text x="415" y="60" font-size="11" opacity=".7">Wi-Fi · 오디오 안 올림</text>
+            <text x="415" y="146">사진 ↔ 측정값</text>
+            <text x="415" y="164" font-size="11" opacity=".7">딥슬립 유지</text>
+            <text x="415" y="250">전체 부팅</text>
+            <text x="415" y="268" font-size="11" opacity=".7">Wi-Fi · NTP · 코덱 · 선국</text>
+          </g>
+
+          <g stroke="currentColor" stroke-width="1.5" fill="none">
+            <path d="M 530 46  L 620 46  L 620 150 L 700 150" marker-end="url(#a3)"/>
+            <path d="M 530 150 L 620 150" />
+            <path d="M 530 254 L 700 254" marker-end="url(#a3)"/>
+          </g>
+
+          <g stroke="currentColor" fill="none" stroke-width="1.5">
+            <rect x="704" y="124" width="176" height="52"/>
+            <rect x="704" y="228" width="176" height="52"/>
+          </g>
+          <g fill="currentColor" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12">
+            <text x="792" y="146">다시 딥슬립</text>
+            <text x="792" y="164" font-size="11" opacity=".7">~1초 만에</text>
+            <text x="792" y="250">라디오 모드</text>
+            <text x="792" y="268" font-size="11" opacity=".7">마지막 채널로</text>
+          </g>
+        </svg>
+        <figcaption>
+          기상 원인별 분기. <code>esp_sleep_get_ext1_wakeup_status()</code> 가
+          어느 핀이 깨웠는지 알려주므로 버튼을 누른 길이를 재지 않아도 된다.
+        </figcaption>
+      </figure>
+
+      <h3>파일 구성</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>src/</caption>
+          <thead><tr><th>파일</th><th>역할</th></tr></thead>
+          <tbody>
+            <tr><td class="pin">main.cpp</td><td>모드 전환, 태스크 배치, 버튼, 딥슬립 진입·기상</td></tr>
+            <tr><td class="pin">config.h</td><td>핀맵과 조정 가능한 상수. 소리가 튀면 여기부터 되돌린다</td></tr>
+            <tr><td class="pin">stations.h/.cpp</td><td>채널 목록과 스트림 주소 해석</td></tr>
+            <tr><td class="pin">es8311.h/.cpp</td><td>오디오 코덱 드라이버 (재생 전용)</td></tr>
+            <tr><td class="pin">rtcclock.h/.cpp</td><td>PCF85063 RTC. BCD 레지스터 직접 처리</td></tr>
+            <tr><td class="pin">sht.h/.cpp</td><td>SHTC3 온습도 센서</td></tr>
+            <tr><td class="pin">battery.h/.cpp</td><td>시스템 전압 ADC와 잔량 환산</td></tr>
+            <tr><td class="pin">wifisetup.h/.cpp</td><td>NVS 저장과 AP 설정 포털</td></tr>
+            <tr><td class="pin">ui.h/.cpp</td><td>모든 화면. 다이얼 · 시계 · 사진 · 설정 안내</td></tr>
+            <tr><td class="pin">photo.h</td><td>200×200 1비트 사진 (자동 생성)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="spec">
+      <h2>기술 사양</h2>
+
+      <h3>하드웨어</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>esptool 로 직접 읽은 값</caption>
+          <tbody>
+            <tr><th>칩</th><td>ESP32-S3-PICO-1 (LGA56) rev v0.2</td></tr>
+            <tr><th>무선</th><td>Wi-Fi 2.4GHz · BT 5 (LE 전용, Classic 없음)</td></tr>
+            <tr><th>코어</th><td>Xtensa LX7 듀얼코어 + LP 코어. 펌웨어는 160MHz 로 낮춰 구동</td></tr>
+            <tr><th>플래시</th><td>8MB 내장 (GD, quad)</td></tr>
+            <tr><th>PSRAM</th><td>8MB (AP_3v3, octal)</td></tr>
+            <tr><th>화면</th><td>1.54인치 SSD1681 · 200×200 · 1비트</td></tr>
+            <tr><th>오디오</th><td>ES8311 코덱 + 스피커 + 마이크</td></tr>
+            <tr><th>센서</th><td>PCF85063 RTC · SHTC3 온습도</td></tr>
+            <tr><th>기타</th><td>TF 카드 슬롯 · MX1.25 배터리 헤더 · 충전 회로</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>핀맵</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>Waveshare 공식 예제에서 확인</caption>
+          <thead><tr><th>블록</th><th>핀</th><th>비고</th></tr></thead>
+          <tbody>
+            <tr><td>ePaper (SPI2)</td><td class="pin">BUSY 8 · RST 9 · DC 10 · CS 11 · SCK 12 · MOSI 13</td><td>—</td></tr>
+            <tr><td>ES8311 I2S</td><td class="pin">MCLK 14 · BCLK 15 · WS 38 · DOUT 45 · DIN 16</td><td>—</td></tr>
+            <tr><td>I2C</td><td class="pin">SDA 47 · SCL 48</td><td>코덱 0x18 · RTC 0x51 · SHTC3 0x70</td></tr>
+            <tr><td>스피커 앰프</td><td class="pin">46</td><td>Active-High</td></tr>
+            <tr><td>전원 레일</td><td class="pin">EPD 6 · Audio 42</td><td><strong>Active-LOW</strong> (0 = 켜짐)</td></tr>
+            <tr><td>배터리 전원</td><td class="pin">17</td><td class="hot">전원 스위치. LOW 로 내리면 보드가 꺼진다</td></tr>
+            <tr><td>전압 ADC</td><td class="pin">4</td><td>ADC1_CH3 · 12dB · 1:2 분압</td></tr>
+            <tr><td>버튼</td><td class="pin">BOOT 0 · PWR 18</td><td>풀업, Active-LOW</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>오디오 경로</h3>
+      <p>
+        <code>ESP32-audioI2S</code> 가 I2S 를 32bit 슬롯 · Philips · MCLK = 256×fs
+        로 잡는다. 리샘플링에 CPU 를 쓰지 않으려고 출력 샘플레이트는 스트림
+        원본을 그대로 따라가고, 값이 바뀔 때마다 ES8311 클럭 계수를 다시 계산한다.
+      </p>
+      <p>
+        ES8311 드라이버는 Espressif <code>esp_codec_dev</code> 의 레지스터
+        시퀀스에서 재생 경로만 남겨 옮긴 것이다. 코덱은 슬레이브, ESP32 가 I2S
+        마스터다.
+      </p>
+
+      <h3>전력</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>계산값 · 300mAh 셀 실사용 80% 기준</caption>
+          <thead><tr><th>상태</th><th class="num">소비</th><th class="num">지속</th><th>비고</th></tr></thead>
+          <tbody>
+            <tr><td>재생</td><td class="num">120~140 mA</td><td class="num">약 1h45</td><td>Wi-Fi 가 대부분</td></tr>
+            <tr><td>일시정지</td><td class="num">15~20 mA</td><td class="num">약 12h</td><td>스트림·오디오 전원 차단, Wi-Fi 유휴</td></tr>
+            <tr><td>시계</td><td class="num">약 1 mA</td><td class="num">10~14일</td><td>1분마다 1초 깨어남</td></tr>
+            <tr><td>딥슬립</td><td class="num">수십 µA</td><td class="num">수개월</td><td>자가방전이 먼저 한계</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Wi-Fi 모뎀 슬립은 상태별로 나눠 건다. 재생 중에는 <strong>끈다</strong> —
+        스트리밍이라 무선이 어차피 자주 깨어 있어 절감폭이 작은 반면, 수신이
+        밀리면 버퍼가 마르고 소리가 끊긴다. 실측으로 버퍼 잔량이 20%에서 31%로
+        올라갔다. 일시정지 때는 <strong>켠다</strong> — 트래픽이 없어 비콘 간격
+        내내 잘 수 있고, 여기가 실제로 크게 아끼는 구간이다.
+      </p>
+
+      <h3>빌드</h3>
+      <pre><code>pip install platformio
+cp src/secrets.h.example src/secrets.h   # Wi-Fi 초기값
+pio run -t upload                        # USB
+pio run -e epaper-radio-ota -t upload    # 무선</code></pre>
+      <p>
+        pioarduino 플랫폼(Arduino 3.3.11 / ESP-IDF 5.5)을 쓴다.
+        <code>lib_ldf_mode</code> 는 기본값이어야 한다 — <code>deep+</code> 로
+        두면 내장 WiFi 가 의존하는 Network 라이브러리를 못 찾는다.
+      </p>
+      <p>
+        Windows 에서는 ESP-IDF 의 <code>esp_matter</code> 헤더 경로가 260자를
+        넘어 패키지 압축 해제가 깨진다. PlatformIO 홈을 짧은 경로로 옮기면 된다
+        (<code>C:\pio</code> 정션 + <code>PLATFORMIO_CORE_DIR</code>).
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="traps">
+      <h2>겪은 함정</h2>
+      <p>
+        같은 보드로 작업할 때 다시 밟기 쉬운 것들. 대부분 증상이 원인과 멀리
+        떨어진 곳에서 나타났다.
+      </p>
+
+      <h3>GPIO17 을 내리면 보드가 스스로 꺼진다</h3>
+      <p>
+        이름만 보고 “배터리 전압 측정용 분압 게이팅”으로 넘겼는데, 실제로는
+        <strong>배터리 전원 자체를 끊는 스위치</strong>였다. 딥슬립에 들어가며
+        이 핀을 내리면 보드가 자기 전원을 끊는다.
+      </p>
+      <p>
+        그런데 USB 가 꽂혀 있으면 USB 가 먹여 살려서 멀쩡하게 동작한다. 그래서
+        <em>“USB 에서는 다 되는데 배터리에서는 시계 모드만 죽는다”</em> 는 형태로
+        나타나고, 전원이 아닌 곳에서 원인을 찾게 된다.
+      </p>
+
+      <h3>USB CDC 출력이 오디오를 끊는다</h3>
+      <p>
+        <code>HWCDC</code> 는 호스트에 연결됐지만 아무도 포트를 읽지 않으면
+        링버퍼가 차고, <code>write</code> 한 번이 최대 2초(20회 × 100ms)까지
+        블로킹된다. 오디오 라이브러리 로그 콜백이 오디오 태스크에서 돌기 때문에
+        그동안 재생이 멈춘다.
+      </p>
+      <p>
+        배터리로만 돌 때는 호스트가 없어 즉시 버려지므로 증상이 없다. 그래서
+        <em>“충전 중에만 주기적으로 끊긴다”</em> 로 보인다. 해결은
+        <code>Serial.setTxTimeoutMs(0)</code> 와 로그 줄이기.
+      </p>
+
+      <h3>딥슬립 뒤 부분 갱신에는 기준 이미지가 필요하다</h3>
+      <p>
+        전자종이 부분 갱신은 컨트롤러 안의 <strong>이전 이미지</strong>와
+        <strong>새 이미지</strong>의 차분으로 동작한다. 평소에는 GxEPD2 가 알아서
+        맞춰 주지만, 딥슬립에서 깨어나면 하드웨어 리셋을 거쳐 이전 이미지가 남아
+        있다고 믿을 수 없다. 그대로 부분 갱신을 요청하면 화면이 아예 바뀌지 않는다.
+      </p>
+      <p>
+        직전 화면을 <code>nextPageToPrevious()</code> 로 다시 그려 넣으면 기준이
+        생겨 항상 정확해진다. 화면 전체를 보관할 필요는 없다 — 시각·온습도·배터리
+        20여 바이트면 같은 그림을 다시 그릴 수 있다.
+      </p>
+
+      <h3>딥슬립 기상은 ext1 이 낫다</h3>
+      <p>
+        <code>ext0</code> 는 RTC 주변장치 전원 도메인이 켜져 있어야 내부 풀업이
+        유지된다. <code>esp_sleep_pd_config()</code> 를 빠뜨리면 슬립 중 핀이 떠서
+        버튼을 눌러도 깨어나지 않는다. <code>ext1</code> 은 핀을 여러 개 볼 수
+        있어 버튼 두 개를 모두 기상 소스로 쓸 수 있고, 어느 핀이 깨웠는지도
+        알려준다.
+      </p>
+      <p>
+        딥슬립 전에 GPIO 를 <code>gpio_hold_en</code> 으로 붙잡되,
+        <strong>깨어난 뒤 반드시 풀어야 한다.</strong> 안 풀면 <code>setup</code>
+        의 <code>digitalWrite</code> 가 먹히지 않아 전원이 영영 안 켜진다.
+      </p>
+
+      <h3>뮤트는 전력을 아끼지 못한다</h3>
+      <p>
+        DAC 만 막을 뿐 Wi-Fi 수신과 디코딩이 그대로 돌아 전력의 대부분을 계속
+        먹는다. 아끼는 건 앰프 전류뿐이다. 그래서 이 펌웨어에는 뮤트가 없고
+        스트림 자체를 끊는 일시정지만 있다.
+      </p>
+
+      <h3>전자종이를 시간 기준으로 갱신할 이유가 없다</h3>
+      <p>
+        잔상은 부분 갱신이 쌓여서 생기는 것이지 시간이 지나서 생기는 게 아니다.
+        내용이 바뀌지 않으면 다시 그릴 필요가 없다.
+      </p>
+    </section>
+
+    <footer>
+      <p>
+        Waveshare ESP32-S3-ePaper-1.54 (V2) · PlatformIO · Arduino-ESP32 3.3.11 ·
+        채널 목록은 <code>mad-for-audio/stations.js</code> 와 같은 소스를 쓴다.
+      </p>
+    </footer>
+  </main>
+</div>

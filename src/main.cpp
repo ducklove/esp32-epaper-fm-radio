@@ -39,6 +39,7 @@
 #include "sht.h"
 #include "stations.h"
 #include "ui.h"
+#include "wifisetup.h"
 
 // ── 상수 ──────────────────────────────────────────────────────────
 constexpr uint8_t  kVolumeSteps   = 20;
@@ -59,6 +60,7 @@ constexpr uint32_t kVeryLongPressMs = 2000;  // PWR 을 이만큼 누르면 전�
 constexpr uint32_t kUiPeriodMs    = 24UL * 60 * 60 * 1000;  // 24시간
 constexpr uint32_t kRetryDelayMs  = 8000;   // 재접속 간격
 constexpr uint32_t kStatusPeriodMs = 60000; // 배터리·신호세기 측정 주기 (1분)
+constexpr uint32_t kWifiPortalMs   = 5UL * 60 * 1000;  // 설정 포털 대기 시간
 
 // ── 전역 ──────────────────────────────────────────────────────────
 static Audio    audio;
@@ -89,6 +91,11 @@ struct ClockSnapshot {
     float   tempC, humidity, battVolts;
 };
 RTC_DATA_ATTR static ClockSnapshot rtcPrevScreen;
+
+// 딥슬립(타이머 없는 상태)인지, 그리고 그 화면에 사진 대신 측정값을 띄우고
+// 있는지. BOOT 를 누를 때마다 둘을 오간다.
+RTC_DATA_ATTR static bool rtcDeepSleepMode = false;
+RTC_DATA_ATTR static bool rtcSleepShowValues = false;
 
 struct Shared {
     uint8_t   index = kDefaultIndex;
@@ -538,6 +545,55 @@ static bool batteryCutoffDue() {
 static UiState  lastUi;
 static uint32_t lastUiMs = 0;
 
+// NVS 에 저장된 정보로 접속한다. 저장된 게 없으면 secrets.h 의 초기값을 쓴다.
+static bool connectWifi() {
+    const WifiCreds c = wifiLoadCreds();
+    RLOGI("Wi-Fi 접속 시도: %s", c.ssid.c_str());
+
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(WIFI_PS_NONE);  // 접속 과정은 확실하게
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(c.ssid.c_str(), c.pass.c_str());
+
+    const uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < kWifiTimeoutMs) {
+        delay(250);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        RLOGE("Wi-Fi 접속 실패: %s", c.ssid.c_str());
+        return false;
+    }
+    RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
+    return true;
+}
+
+// 설정 포털. AP 를 띄우고 화면에 접속 방법을 적는다. 저장되면 재시작한다.
+static void runWifiPortal() {
+    setState(ST_WIFISETUP);
+    lastUi = snapshotUi();
+    uiRender(lastUi, true);
+
+    const bool saved = wifiRunPortal(kWifiPortalMs, [](const String& ap, const String& url,
+                                                      const String& pass) {
+        UiState u;
+        u.state = ST_WIFISETUP;
+        u.apSsid = ap;
+        u.apPass = pass;
+        u.apUrl = url;
+        uiRenderWifiSetup(u);
+    });
+
+    if (saved) {
+        RLOGI("새 Wi-Fi 정보 저장됨 — 재시작");
+        delay(300);
+        ESP.restart();
+    }
+    RLOGE("설정 포털 시간 초과 — Wi-Fi 없이 계속");
+    setState(ST_ERROR, "NO WIFI");
+    lastUi = snapshotUi();
+    uiRender(lastUi, true);
+}
+
 static void clockTick();               // 시계 모드 갱신, 돌아오지 않는다
 static void enterDeepSleepFromClock(); // 시계 모드 -> 완전한 딥슬립, 돌아오지 않는다
 static void sleepAgain(bool clockTimer);  // 딥슬립 진입, 돌아오지 않는다
@@ -654,6 +710,7 @@ void setup() {
 
     // 전원을 새로 넣었거나 짧게 눌러 깨운 것이면 평소대로 켜진다.
     rtcInOffMode = false;
+    rtcDeepSleepMode = false;
 
     powerUpRails();
     btnBoot.begin();
@@ -711,21 +768,10 @@ void setup() {
     lastUi = snapshotUi();
     uiRender(lastUi);
 
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(WIFI_PS_NONE);  // 접속 과정은 확실하게
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-    const uint32_t t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < kWifiTimeoutMs) {
-        delay(250);
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-        RLOGE("Wi-Fi 접속 실패");
-        setState(ST_ERROR, "NO WIFI");
-        lastUi = snapshotUi();
-        uiRender(lastUi, true);
-        return;  // loop() 에서 계속 재시도된다
+    if (!connectWifi()) {
+        // 접속에 실패하면 설정 포털을 띄운다. 저장되면 재시작해서 다시 붙는다.
+        runWifiPortal();
+        return;  // 포털이 끝났는데도 못 붙었으면 loop() 에서 계속 재시도
     }
     RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
     setupOta();
@@ -820,17 +866,26 @@ static void powerOff(bool clockMode, const char* why) {
     rtcInOffMode = true;
     rtcClockTicks = 0;
 
-    UiState off = snapshotUi();
-    if (sensor.ok() && sensor.read(&off.tempC, &off.humidity)) {
-        off.hasEnv = true;
-        off.tempC -= SHTC3_TEMP_OFFSET_C;
-        // 방금까지 재생 중이라 보드가 더워져 있어서 이 한 프레임은 실제보다
-        // 높게 나온다. 1분 뒤 시계 갱신이 식은 값으로 덮어쓴다.
+    rtcDeepSleepMode = !clockMode;
+
+    if (clockMode) {
+        UiState off = snapshotUi();
+        if (sensor.ok() && sensor.read(&off.tempC, &off.humidity)) {
+            off.hasEnv = true;
+            off.tempC -= SHTC3_TEMP_OFFSET_C;
+            // 방금까지 재생 중이라 보드가 더워져 있어서 이 한 프레임은 실제보다
+            // 높게 나온다. 1분 뒤 시계 갱신이 식은 값으로 덮어쓴다.
+        }
+        uiRenderOff(off, true, false);  // 들어갈 때 한 번은 깨끗하게
+        // 전체 갱신이라 이 그림이 컨트롤러의 이전/현재 버퍼 양쪽에 들어간다.
+        // 다음 시계 갱신이 이걸 기준으로 부분 갱신을 할 수 있다.
+        saveClockSnapshot(off, false);
+    } else {
+        // 딥슬립은 사진으로 화면을 채운다. BOOT 를 누르면 측정값 화면으로 바뀐다.
+        rtcSleepShowValues = false;
+        uiRenderPhoto();
+        rtcPrevScreen.valid = false;  // 사진이라 시계 부분 갱신의 기준이 못 된다
     }
-    uiRenderOff(off, true, !clockMode);  // 들어갈 때 한 번은 깨끗하게
-    // 전체 갱신이라 이 그림이 컨트롤러의 이전/현재 버퍼 양쪽에 들어간다.
-    // 다음 시계 갱신이 이걸 기준으로 부분 갱신을 할 수 있다.
-    saveClockSnapshot(off, !clockMode);
 
     sleepAgain(clockMode);
 }
@@ -1002,8 +1057,22 @@ static void enterDeepSleepFromClock() {
     u.battPercent = Battery::voltsToPercent(u.battVolts);
 
     uiBegin();
-    uiRenderOff(u, true, true);  // frozen — 시계가 멈춘다는 표시
-    saveClockSnapshot(u, true);
+
+    // 시계 모드에서 처음 넘어오면 사진. 이미 딥슬립인데 BOOT 를 또 눌렀으면
+    // 사진 ↔ 측정값을 오간다.
+    if (!rtcDeepSleepMode) {
+        rtcDeepSleepMode = true;
+        rtcSleepShowValues = false;
+    } else {
+        rtcSleepShowValues = !rtcSleepShowValues;
+    }
+
+    if (rtcSleepShowValues) {
+        uiRenderOff(u, true, true);  // 그 순간 잰 값 + AT HH:MM
+    } else {
+        uiRenderPhoto();
+    }
+    rtcPrevScreen.valid = false;  // 시계 부분 갱신의 기준이 못 된다
     sleepAgain(false);
 }
 
@@ -1019,6 +1088,16 @@ void loop() {
 
     // ── 버튼 ─────────────────────────────────────────────────────
     if (const uint8_t ev = btnBoot.poll()) {
+        if (ev == 3) {
+            // 아주 길게 누르면 Wi-Fi 설정 포털. 다른 곳에 들고 갔을 때 쓴다.
+            if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
+            audio.stopSong();
+            codec.setMute(true);
+            codec.setPaEnabled(false);
+            runWifiPortal();
+            if (audioTaskHandle) vTaskResume(audioTaskHandle);
+            return;
+        }
         lockShared();
         if (ev == 1) shared.index = (uint8_t)((shared.index + 1) % kStationCount);
         else         shared.index = (uint8_t)((shared.index + kStationCount - 1) % kStationCount);

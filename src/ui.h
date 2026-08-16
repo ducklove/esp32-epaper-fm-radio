@@ -13,6 +13,7 @@ enum PlayState : uint8_t {
     ST_ERROR,
     ST_UPDATING,  // OTA 펌웨어 수신 중
     ST_LOWBATT,   // 배터리 부족으로 스스로 멈춘 상태
+    ST_WIFISETUP, // AP 를 띄우고 Wi-Fi 정보를 입력받는 중
 };
 
 struct UiState {
@@ -39,6 +40,10 @@ struct UiState {
     bool      hasEnv = false;     // SHTC3 값이 유효한지
     float     tempC = 0.0f;
     float     humidity = 0.0f;
+
+    String    apSsid;             // Wi-Fi 설정 모드에서 띄운 AP 정보
+    String    apPass;
+    String    apUrl;
 };
 
 // RSSI(dBm) → 막대 0~3칸
@@ -55,6 +60,12 @@ void uiRender(const UiState& s, bool forceFull = false);
 // frozen=true 면 시계 갱신이 멈춘다는 표시를 남긴다. 완전한 딥슬립에서는
 // 화면이 그 시점에 멈추는데, 표시가 없으면 시계가 고장난 것처럼 보인다.
 void uiRenderOff(const UiState& s, bool forceFull = false, bool frozen = false);
+
+// 딥슬립 기본 화면 — 사진으로 200x200 을 꽉 채운다.
+void uiRenderPhoto();
+
+// Wi-Fi 설정 모드 안내. 보드 앞에서 폰만 보고 따라할 수 있게 적는다.
+void uiRenderWifiSetup(const UiState& s);
 
 // 화면에 내보내지 않고 컨트롤러의 '이전 이미지' 버퍼(0x26)에만 그린다.
 //

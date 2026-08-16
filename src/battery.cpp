@@ -21,6 +21,9 @@ constexpr uint8_t kSamples = 8;
 
 void Battery::begin(uint8_t adcPin) {
     _pin = adcPin;
+    // 핀을 먼저 한 번 읽어 ADC 채널로 잡아 둔다. 이걸 건너뛰고 감쇠부터
+    // 설정하면 "Pin is not configured as analog channel" 로 무시된다.
+    (void)analogRead(_pin);
     // 12dB 감쇠 = 0~3.3V 입력 범위. 분압 후 전압이 최대 2.1V 라 이 범위면 된다.
     analogSetPinAttenuation(_pin, ADC_11db);
     _ready = true;

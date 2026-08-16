@@ -12,6 +12,7 @@ enum PlayState : uint8_t {
     ST_PAUSED,    // 스트림을 끊고 오디오 전원까지 내린 상태
     ST_ERROR,
     ST_UPDATING,  // OTA 펌웨어 수신 중
+    ST_LOWBATT,   // 배터리 부족으로 스스로 멈춘 상태
 };
 
 struct UiState {

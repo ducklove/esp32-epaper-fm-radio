@@ -540,6 +540,7 @@ static uint32_t lastUiMs = 0;
 
 static void clockTick();               // 시계 모드 갱신, 돌아오지 않는다
 static void enterDeepSleepFromClock(); // 시계 모드 -> 완전한 딥슬립, 돌아오지 않는다
+static void sleepAgain(bool clockTimer);  // 딥슬립 진입, 돌아오지 않는다
 
 // ── OTA ───────────────────────────────────────────────────────────
 // 이 보드를 매번 뜯어서 USB 를 꽂기 번거로워서 무선 업데이트를 넣었다.
@@ -671,6 +672,37 @@ void setup() {
     pollSlowStatus();
 
     uiBegin();
+
+    // 배터리가 바닥인 채로 라디오를 켜면 Wi-Fi 송신 피크(300mA+)에서 전압이
+    // 주저앉아 그대로 죽는다. 사용자에게는 '버튼을 눌러도 아무 반응이 없다'로
+    // 보인다. 아예 시작하지 않고 이유를 화면에 남긴 뒤 다시 잠든다.
+    // USB 가 꽂혀 있으면 전압이 4V 부근이라 여기에 걸리지 않는다.
+    {
+        lockShared();
+        const float   v = shared.battVolts;
+        const uint8_t pct = shared.battPercent;
+        unlockShared();
+
+        if (v >= 2.5f && pct <= BATT_CUTOFF_PERCENT) {
+            RLOGE("배터리 %u%% (%.2fV) — 라디오를 켜지 않는다", (unsigned)pct, v);
+            UiState low;
+            low.state = ST_LOWBATT;
+            low.battVolts = v;
+            low.battPercent = pct;
+            low.freq = kStations[rtcStationIndex].freq;
+            low.name = kStations[rtcStationIndex].name;
+            struct tm now = {};
+            if (readClock(&now)) {
+                low.hasTime = true;
+                low.hour = (uint8_t)now.tm_hour;
+                low.minute = (uint8_t)now.tm_min;
+            }
+            uiRenderOff(low, true);
+            rtcInOffMode = true;
+            sleepAgain(false);  // 돌아오지 않는다
+        }
+    }
+
     lastUi = snapshotUi();
     uiRender(lastUi, true);
 
@@ -818,7 +850,13 @@ static void sleepAgain(bool clockTimer) {
     // 패널의 이전 이미지가 사라져 매번 전체 갱신(2초 + 번쩍임)을 해야 한다.
     // 하이버네이트된 패널은 1µA 수준이라 켜 두는 편이 싸다.
     digitalWrite(PIN_PWR_AUDIO, HIGH);
-    digitalWrite(PIN_PWR_VBAT, LOW);
+
+    // VBAT(GPIO17)은 절대 내리지 않는다. 이 핀은 배터리 전압 분압 게이팅이
+    // 아니라 배터리 전원 자체를 끊는 스위치다 (Waveshare 07_BATT_PWR_Test 가
+    // 화면에 OFF 를 찍고 VBAT_POWER_OFF() 를 부르는 것이 소프트 전원 차단이다).
+    // 여기서 LOW 로 내리면 딥슬립에 들어가며 스스로 전원을 끊는다. USB 가
+    // 꽂혀 있으면 USB 가 먹여 살려서 멀쩡하지만, 배터리만 있으면 그대로 죽는다.
+    digitalWrite(PIN_PWR_VBAT, HIGH);
 
     // 딥슬립에 들어가면 일반 GPIO 는 전원이 내려가 떠 버린다. 레일이
     // 다시 켜지지 않도록 레벨을 붙잡아 둔다.

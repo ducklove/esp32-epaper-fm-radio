@@ -278,7 +278,106 @@ void uiRender(const UiState& s, bool forceFull) {
     display.hibernate();
 }
 
+// 완전한 딥슬립 화면.
+//
+// 큰 시계는 그리지 않는다 — 갱신이 멈추는데 시각을 크게 띄워 두면 멈춘 시계가
+// 고장난 시계로 보인다. 대신 BOOT 를 누른 그 순간 잰 값을 보여주고, 언제 잰
+// 것인지(AT HH:MM)를 함께 적어 살아 있는 값이 아님을 분명히 한다.
+void drawSleepScreen(const UiState& s) {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+
+    display.setFont(&FreeSansBold9pt7b);
+    char freq[12];
+    snprintf(freq, sizeof(freq), "%.1f MHz", s.freq);
+    drawCentered(freq, W / 2, 28);
+    display.setFont(&FreeSans9pt7b);
+    drawCentered(s.name.isEmpty() ? "---" : s.name.c_str(), W / 2, 46);
+
+    display.setFont(&FreeSansBold24pt7b);
+    drawCentered("SLEEP", W / 2, 96);
+
+    display.drawFastHLine(28, 110, W - 56, GxEPD_BLACK);
+
+    // ── 누른 순간의 측정값 ───────────────────────────────────────
+    if (s.hasEnv) {
+        char env[24];
+        snprintf(env, sizeof(env), "%.1fC   %.0f%%", s.tempC, s.humidity);
+        display.setFont(&FreeSansBold12pt7b);
+        drawCentered(env, W / 2, 136);
+    }
+    if (s.hasTime) {
+        char at[16];
+        snprintf(at, sizeof(at), "AT %02u:%02u", (unsigned)s.hour, (unsigned)s.minute);
+        display.setFont(nullptr);
+        display.setTextSize(1);
+        drawCentered(at, W / 2, 148);
+    }
+
+    if (s.battVolts >= 2.5f) {
+        constexpr int16_t by = 162, bw = 52, bh = 14;
+        const int16_t bx = (W - bw) / 2 - 12;
+        display.drawRect(bx, by, bw, bh, GxEPD_BLACK);
+        display.fillRect(bx + bw, by + 4, 3, bh - 8, GxEPD_BLACK);
+        const int16_t fill = (int16_t)((int32_t)(bw - 4) * s.battPercent / 100);
+        if (fill > 0) display.fillRect(bx + 2, by + 2, fill, bh - 4, GxEPD_BLACK);
+
+        char b[8];
+        snprintf(b, sizeof(b), "%u%%", (unsigned)s.battPercent);
+        display.setFont(nullptr);
+        display.setTextSize(1);
+        display.setCursor(bx + bw + 8, by + 4);
+        display.print(b);
+    }
+
+    display.setFont(nullptr);
+    display.setTextSize(1);
+    drawCentered("PWR: RADIO   BOOT: UPDATE", W / 2, H - 8);
+}
+
+// 배터리가 바닥나 스스로 멈춘 화면. 시계 화면 그대로 멈춰 버리면 왜 멈췄는지
+// 알 길이 없어 고장으로 보인다. 이유를 화면에 남긴다.
+void drawLowBattScreen(const UiState& s) {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+
+    display.setFont(&FreeSansBold24pt7b);
+    drawCentered("LOW", W / 2, 70);
+    display.setFont(&FreeSansBold12pt7b);
+    drawCentered("BATTERY", W / 2, 98);
+
+    display.drawFastHLine(28, 116, W - 56, GxEPD_BLACK);
+
+    if (s.battVolts >= 2.5f) {
+        char b[24];
+        snprintf(b, sizeof(b), "%u%%   %.2fV", (unsigned)s.battPercent, s.battVolts);
+        display.setFont(&FreeSans9pt7b);
+        drawCentered(b, W / 2, 142);
+    }
+    if (s.hasTime) {
+        char at[16];
+        snprintf(at, sizeof(at), "AT %02u:%02u", (unsigned)s.hour, (unsigned)s.minute);
+        display.setFont(nullptr);
+        display.setTextSize(1);
+        drawCentered(at, W / 2, 156);
+    }
+
+    display.setFont(nullptr);
+    display.setTextSize(1);
+    drawCentered("CHARGE AND PRESS PWR", W / 2, H - 20);
+    drawCentered("CLOCK STOPPED TO SAVE CELL", W / 2, H - 8);
+}
+
 void drawOffScreen(const UiState& s, bool frozen) {
+    if (s.state == ST_LOWBATT) {
+        drawLowBattScreen(s);
+        return;
+    }
+    if (frozen) {
+        drawSleepScreen(s);
+        return;
+    }
+
     display.fillScreen(GxEPD_WHITE);
     display.setTextColor(GxEPD_BLACK);
 
@@ -345,19 +444,7 @@ void drawOffScreen(const UiState& s, bool frozen) {
 
     // 버튼이 두 개뿐이라 어느 쪽이 무엇인지 화면에 적어 둔다.
     display.setCursor(4, H - 8);
-    display.print(frozen ? "PWR: RADIO" : "PWR: RADIO   BOOT: SLEEP");
-
-    // 완전한 딥슬립이면 화면이 여기서 멈춘다. 표시가 없으면 시계가 고장난
-    // 것처럼 보이므로 검은 배지를 남긴다.
-    if (frozen) {
-        constexpr int16_t bw = 44, bh = 12;
-        const int16_t bx = W - bw - 3;
-        display.fillRect(bx, 2, bw, bh, GxEPD_BLACK);
-        display.setTextColor(GxEPD_WHITE);
-        display.setCursor(bx + 6, 5);
-        display.print("SLEEP");
-        display.setTextColor(GxEPD_BLACK);
-    }
+    display.print("PWR: RADIO   BOOT: SLEEP");
 }
 
 void uiRenderOffToPrevious(const UiState& s, bool frozen) {

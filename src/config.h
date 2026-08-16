@@ -33,7 +33,12 @@ constexpr int8_t PIN_AUDIO_PA = 46;  // 스피커 앰프 enable (Active-High)
 // 주의: EPD / Audio 전원은 Active-LOW (0 = ON). Waveshare board_power_bsp.cpp 기준.
 constexpr int8_t PIN_PWR_EPD   = 6;
 constexpr int8_t PIN_PWR_AUDIO = 42;
-constexpr int8_t PIN_PWR_VBAT  = 17;  // 이쪽만 Active-High (1 = ON). 배터리 분압 게이팅.
+// GPIO17 은 배터리 전원 스위치다 (Active-High, 1 = ON). 분압 게이팅이 아니다.
+// LOW 로 내리면 보드가 배터리에서 분리되어 그대로 꺼진다 — Waveshare
+// 07_BATT_PWR_Test 의 VBAT_POWER_OFF() 가 소프트 전원 차단으로 쓰는 방식이다.
+// 딥슬립에 들어갈 때도 HIGH 로 유지해야 한다. USB 가 꽂혀 있으면 내려도
+// 멀쩡해 보여서 놓치기 쉽다.
+constexpr int8_t PIN_PWR_VBAT  = 17;
 
 // ── 전력 절감 ─────────────────────────────────────────────────────
 // 300mAh 급 셀로도 버티게 하려고 넣은 설정. 소리가 튀면 여기부터 되돌린다.

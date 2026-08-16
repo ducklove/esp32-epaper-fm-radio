@@ -54,6 +54,31 @@ constexpr uint32_t CPU_FREQ_MHZ = 160;
 constexpr bool WIFI_SLEEP_WHILE_PLAYING = false;
 constexpr bool WIFI_SLEEP_WHILE_IDLE    = true;
 
+// ── 시계 / 센서 ───────────────────────────────────────────────────
+// 시각은 온보드 PCF85063 RTC 에서 읽고, NTP 는 하루 한 번만 받는다.
+// 딥슬립에 들어가도 RTC 는 계속 돌아서 깨어날 때마다 맞출 필요가 없다.
+#define NTP_TZ      "KST-9"          // 한국 표준시, 서머타임 없음
+#define NTP_SERVER1 "kr.pool.ntp.org"
+#define NTP_SERVER2 "time.google.com"
+constexpr uint32_t NTP_RESYNC_SEC  = 24UL * 60 * 60;  // 하루
+constexpr uint32_t NTP_TIMEOUT_MS  = 10000;
+
+// SHTC3 는 ESP32 바로 옆이라 자체 발열만큼 높게 읽힌다. Waveshare 예제도
+// 같은 값을 빼고 있다. 실제 온도와 어긋나면 여기를 조정한다.
+constexpr float SHTC3_TEMP_OFFSET_C = 4.0f;
+
+// ── 꺼짐(시계) 모드 ───────────────────────────────────────────────
+// 전원을 끄면 완전히 잠들지 않고 1분마다 잠깐 깨어나 시각·온습도·배터리를
+// 갱신하고 다시 잠든다. 깨어 있는 시간이 1초 남짓이라 평균 1mA 안팎이다.
+constexpr uint64_t CLOCK_TICK_SEC = 60;
+
+// ── 배터리 보호 ───────────────────────────────────────────────────
+// 이 값 아래로 떨어지면 재생을 멈추고 알아서 꺼진다. 리튬 셀을 과방전에서
+// 지키고, 재생 중 갑자기 죽는 것보다 낫다.
+// 충전 중에는 전압이 4V 부근이라 여기에 걸리지 않는다.
+constexpr uint8_t  BATT_CUTOFF_PERCENT = 10;
+constexpr uint8_t  BATT_CUTOFF_STRIKES = 2;  // 연속 몇 번 측정되면 실행할지
+
 // 오디오 라이브러리의 상세 로그(evt_info). 켜면 HLS 세그먼트마다 긴 URL 과
 // content-length 가 4~5초 간격으로 쏟아진다. 이 콜백은 오디오 태스크에서
 // 실행되므로 출력 자체가 재생을 방해할 수 있다. 문제를 쫓을 때만 켠다.

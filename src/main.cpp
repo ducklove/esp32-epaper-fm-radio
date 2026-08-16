@@ -26,7 +26,9 @@
 #include "config.h"
 #include "es8311.h"
 #include "log.h"
+#include "rtcclock.h"
 #include "secrets.h"
+#include "sht.h"
 #include "stations.h"
 #include "ui.h"
 
@@ -54,7 +56,17 @@ constexpr uint32_t kStatusPeriodMs = 60000; // 배터리·신호세기 측정 �
 static Audio    audio;
 static ES8311   codec;
 static Battery  battery;
+static RtcClock rtcClock;
+static Shtc3    sensor;
 static TaskHandle_t audioTaskHandle = nullptr;
+
+// 딥슬립을 건너 살아남아야 하는 것들. 시계 모드로 깨어날 때마다 잃으면
+// 마지막 채널도, 마지막 NTP 시각도 알 수 없다.
+RTC_DATA_ATTR static bool     rtcInOffMode = false;
+RTC_DATA_ATTR static uint8_t  rtcStationIndex = kDefaultIndex;
+RTC_DATA_ATTR static uint8_t  rtcVolume = kDefaultVolume;
+RTC_DATA_ATTR static uint32_t rtcLastNtpEpoch = 0;
+RTC_DATA_ATTR static uint16_t rtcClockTicks = 0;
 
 struct Shared {
     uint8_t   index = kDefaultIndex;
@@ -85,6 +97,61 @@ static void setState(PlayState st, const String& detail = String()) {
     shared.state = st;
     shared.detail = detail;
     unlockShared();
+}
+
+// ── 시계 / 센서 ───────────────────────────────────────────────────
+// 코덱·RTC·온습도 센서가 모두 같은 I2C 버스에 있다. 한 번만 올린다.
+static bool i2cReady = false;
+static void i2cBegin() {
+    if (i2cReady) return;
+    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000UL);
+    i2cReady = true;
+}
+
+// 현재 시각. RTC 가 없거나 발진기가 멈춘 적이 있으면 false.
+static bool readClock(struct tm* out) {
+    return rtcClock.ok() && rtcClock.getTime(out);
+}
+
+// NTP 로 받아 RTC 에 써 넣는다. 하루 한 번이면 충분하다.
+static bool syncNtp() {
+    if (WiFi.status() != WL_CONNECTED) return false;
+
+    RLOGI("NTP 동기화 시도...");
+    configTzTime(NTP_TZ, NTP_SERVER1, NTP_SERVER2);
+
+    struct tm t = {};
+    if (!getLocalTime(&t, NTP_TIMEOUT_MS)) {
+        RLOGE("NTP 응답 없음");
+        return false;
+    }
+    if (!rtcClock.setTime(t)) {
+        RLOGE("RTC 쓰기 실패");
+        return false;
+    }
+    rtcLastNtpEpoch = (uint32_t)mktime(&t);
+    RLOGI("NTP 동기화 완료: %04d-%02d-%02d %02d:%02d:%02d", t.tm_year + 1900,
+          t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+    return true;
+}
+
+// 마지막 동기화로부터 하루가 지났거나 RTC 시각을 믿을 수 없으면 다시 받는다.
+static void syncNtpIfDue() {
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    if (!rtcClock.ok() || !rtcClock.timeValid() || rtcLastNtpEpoch == 0) {
+        syncNtp();
+        return;
+    }
+    struct tm now = {};
+    if (!readClock(&now)) {
+        syncNtp();
+        return;
+    }
+    const uint32_t epoch = (uint32_t)mktime(&now);
+    if (epoch < rtcLastNtpEpoch || epoch - rtcLastNtpEpoch >= NTP_RESYNC_SEC) {
+        syncNtp();
+    }
 }
 
 // 모뎀 슬립을 재생/유휴 상태에 따라 갈아 끼운다. 근거는 config.h 참고.
@@ -325,6 +392,16 @@ static UiState snapshotUi() {
     u.volumeMax = kVolumeSteps;
     u.wifi = WiFi.status() == WL_CONNECTED;
     if (paused) u.state = ST_PAUSED;
+
+    struct tm now = {};
+    if (readClock(&now)) {
+        u.hasTime = true;
+        u.hour = (uint8_t)now.tm_hour;
+        u.minute = (uint8_t)now.tm_min;
+        u.month = (uint8_t)(now.tm_mon + 1);
+        u.day = (uint8_t)now.tm_mday;
+        u.weekday = (uint8_t)now.tm_wday;
+    }
     return u;
 }
 
@@ -361,11 +438,45 @@ static void pollSlowStatus() {
     RLOGI("배터리 %.2fV (%u%%)  Wi-Fi %ddBm (%u칸)  버퍼 %u%%  가동 %lu분", v,
           (unsigned)pct, (int)rssi, (unsigned)bars, (unsigned)bufPct,
           (unsigned long)(millis() / 60000));
+
+    // 하루 한 번 시각을 다시 맞춘다. 이미 최근에 받았으면 그냥 지나간다.
+    syncNtpIfDue();
+}
+
+// 배터리가 바닥나면 알아서 끈다. 재생 중 갑자기 죽는 것보다 낫고, 리튬 셀을
+// 과방전에서 지킨다. 부하가 걸릴 때 순간적으로 처지는 것과 구분하려고
+// 연속으로 몇 번 잡힐 때만 실행한다.
+// 충전 중에는 전압이 4V 부근이라 여기에 걸리지 않는다.
+static bool batteryCutoffDue() {
+    static uint8_t strikes = 0;
+
+    lockShared();
+    const float   v = shared.battVolts;
+    const uint8_t pct = shared.battPercent;
+    unlockShared();
+
+    if (v < 2.5f) {  // 배터리 미장착 — USB 로만 돌고 있다
+        strikes = 0;
+        return false;
+    }
+    if (pct > BATT_CUTOFF_PERCENT) {
+        strikes = 0;
+        return false;
+    }
+    if (strikes < 255) strikes++;
+    if (strikes < BATT_CUTOFF_STRIKES) {
+        RLOGI("배터리 낮음 %u%% (%u/%u)", (unsigned)pct, (unsigned)strikes,
+              (unsigned)BATT_CUTOFF_STRIKES);
+        return false;
+    }
+    return true;
 }
 
 // ── setup / loop ──────────────────────────────────────────────────
 static UiState  lastUi;
 static uint32_t lastUiMs = 0;
+
+static void clockTick();  // 시계 모드 (딥슬립 타이머 기상), 돌아오지 않는다
 
 // ── OTA ───────────────────────────────────────────────────────────
 // 이 보드를 매번 뜯어서 USB 를 꽂기 번거로워서 무선 업데이트를 넣었다.
@@ -451,10 +562,28 @@ void setup() {
     sharedLock = xSemaphoreCreateMutex();
     cmdQueue = xQueueCreate(4, sizeof(Cmd));
 
+    // 시계 모드에서 타이머로 깨어난 것이면 Wi-Fi 도, 오디오도 올리지 않는다.
+    // 값만 갱신하고 곧바로 다시 잠든다 — 돌아오지 않는다.
+    if (rtcInOffMode && esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
+        clockTick();
+    }
+    // 버튼으로 깨어났거나 전원을 새로 넣었으면 평소대로 켜진다.
+    rtcInOffMode = false;
+
     powerUpRails();
     btnBoot.begin();
     btnPwr.begin();
     battery.begin(PIN_VBAT_ADC);
+    i2cBegin();
+    rtcClock.begin();
+    sensor.begin();
+
+    // 딥슬립 전에 듣던 채널과 음량을 이어받는다.
+    lockShared();
+    shared.index = (rtcStationIndex < kStationCount) ? rtcStationIndex : kDefaultIndex;
+    shared.volume = (rtcVolume <= kVolumeSteps) ? rtcVolume : kDefaultVolume;
+    unlockShared();
+
     pollSlowStatus();
 
     uiBegin();
@@ -484,6 +613,7 @@ void setup() {
     }
     RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
     setupOta();
+    syncNtpIfDue();            // 하루 한 번. RTC 가 멀쩡하면 그냥 지나간다
     applyWifiPowerSave(true);  // 곧 재생을 시작하므로 재생용 정책으로
 
     // ── I2S + 코덱 ───────────────────────────────────────────────
@@ -540,7 +670,10 @@ void setup() {
     // TLS 핸드셰이크(WiFiClientSecure)가 스택을 많이 먹어서 넉넉히 잡는다.
     xTaskCreatePinnedToCore(audioTask, "audio", 16384, nullptr, 3, &audioTaskHandle, 1);
 
-    const Cmd cmd{Cmd::TUNE, kDefaultIndex};
+    lockShared();
+    const uint8_t startIndex = shared.index;
+    unlockShared();
+    const Cmd cmd{Cmd::TUNE, startIndex};
     xQueueSend(cmdQueue, &cmd, 0);
 }
 
@@ -548,8 +681,10 @@ void setup() {
 // 완전히 차단하는 스위치가 없어서 딥슬립으로 대신한다. ePaper 는 전원이
 // 끊겨도 그림이 남으므로 꺼진 화면이 그대로 유지된다.
 // PWR(GPIO18)을 다시 누르면 깨어나고, 그때는 setup() 부터 새로 시작한다.
-static void powerOff() {
-    RLOGI("전원 끔 — 딥슬립 진입");
+static void sleepAgain(bool lowBattery);
+
+static void powerOff(bool lowBattery = false) {
+    RLOGI("%s", lowBattery ? "배터리 부족 — 자동 종료" : "전원 끔 — 딥슬립 진입");
 
     // 소리부터 끊는다. 화면 그리는 동안 계속 울리면 어색하다.
     if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
@@ -557,17 +692,35 @@ static void powerOff() {
     codec.setMute(true);
     codec.setPaEnabled(false);
 
-    uiRenderOff(snapshotUi());
-    uiSleep();  // 패널을 하이버네이트한 뒤에 전원을 끊어야 안전하다
+    // 깨어났을 때 이어서 쓸 수 있도록 남긴다.
+    lockShared();
+    rtcStationIndex = shared.index;
+    rtcVolume = shared.volume;
+    unlockShared();
+    rtcInOffMode = true;
+    rtcClockTicks = 0;
 
+    UiState off = snapshotUi();
+    if (sensor.ok()) off.hasEnv = sensor.read(&off.tempC, &off.humidity);
+    uiRenderOff(off, true);  // 들어갈 때 한 번은 깨끗하게
+
+    sleepAgain(lowBattery);
+}
+
+// 딥슬립 진입부. 전원을 끌 때와 시계 갱신 뒤 다시 잠들 때가 같은 코드를 쓴다.
+// 돌아오지 않는다.
+static void sleepAgain(bool lowBattery) {
     // 누른 채로 잠들면 곧바로 다시 깨어난다. 뗄 때까지 기다린다.
     while (digitalRead(PIN_BTN_PWR) == LOW || digitalRead(PIN_BTN_BOOT) == LOW) delay(20);
     delay(100);
 
     // 전원 레일 차단. EPD/Audio 는 Active-LOW 라 HIGH 가 OFF,
     // VBAT 분압 게이팅은 Active-HIGH 라 LOW 가 OFF.
+    //
+    // EPD 레일은 끄지 않는다. 1분마다 시계를 갱신해야 하는데, 전원을 끊으면
+    // 패널의 이전 이미지가 사라져 매번 전체 갱신(2초 + 번쩍임)을 해야 한다.
+    // 하이버네이트된 패널은 1µA 수준이라 켜 두는 편이 싸다.
     digitalWrite(PIN_PWR_AUDIO, HIGH);
-    digitalWrite(PIN_PWR_EPD, HIGH);
     digitalWrite(PIN_PWR_VBAT, LOW);
 
     // 딥슬립에 들어가면 일반 GPIO 는 전원이 내려가 떠 버린다. 레일이
@@ -597,9 +750,66 @@ static void powerOff() {
     esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
+    // 시계를 계속 보여줘야 하므로 1분마다 잠깐 깨어난다. 배터리가 바닥나면
+    // 그마저도 하지 않고 버튼을 누를 때까지 완전히 잔다.
+    if (lowBattery) {
+        RLOGI("배터리 부족 — 시계 갱신 없이 완전히 잠든다");
+    } else {
+        esp_sleep_enable_timer_wakeup(CLOCK_TICK_SEC * 1000000ULL);
+    }
+
     Serial.flush();
     delay(50);
     esp_deep_sleep_start();
+}
+
+// ── 시계 모드 ─────────────────────────────────────────────────────
+// 꺼진 상태에서 1분마다 깨어나는 경로. Wi-Fi 는 절대 올리지 않는다 —
+// 그게 전력의 대부분이라 올리는 순간 시계 모드의 의미가 없어진다.
+// 값만 읽어 화면을 고치고 곧바로 다시 잠든다. 돌아오지 않는다.
+static void clockTick() {
+    powerUpRails();          // EPD 는 이미 켜져 있고, 여기서 홀드를 푼다
+    digitalWrite(PIN_PWR_AUDIO, HIGH);  // 오디오는 계속 꺼 둔다
+
+    battery.begin(PIN_VBAT_ADC);
+    i2cBegin();
+    rtcClock.begin();
+    sensor.begin();
+
+    UiState u;
+    u.freq = kStations[rtcStationIndex].freq;
+    u.name = kStations[rtcStationIndex].name;
+    u.state = ST_PAUSED;
+    u.volumeMax = kVolumeSteps;
+
+    struct tm now = {};
+    if (readClock(&now)) {
+        u.hasTime = true;
+        u.hour = (uint8_t)now.tm_hour;
+        u.minute = (uint8_t)now.tm_min;
+        u.month = (uint8_t)(now.tm_mon + 1);
+        u.day = (uint8_t)now.tm_mday;
+        u.weekday = (uint8_t)now.tm_wday;
+    }
+    u.hasEnv = sensor.read(&u.tempC, &u.humidity);
+    u.battVolts = battery.readVolts();
+    u.battPercent = Battery::voltsToPercent(u.battVolts);
+
+    RLOGI("시계 갱신: %02u:%02u  %.1fC %.0f%%  배터리 %.2fV (%u%%)",
+          (unsigned)u.hour, (unsigned)u.minute, u.tempC, u.humidity, u.battVolts,
+          (unsigned)u.battPercent);
+
+    // initial=false — 패널은 하이버네이트만 됐을 뿐 이전 이미지를 갖고 있다.
+    // true 로 부르면 GxEPD2 가 다음 갱신을 전체 갱신으로 승격시켜서, 1분마다
+    // 1.4초씩 화면이 번쩍인다.
+    uiBegin(false);
+    // 30회(=30분)마다 한 번만 전체 갱신해서 잔상을 턴다.
+    uiRenderOff(u, (rtcClockTicks % 30) == 0);
+    rtcClockTicks++;
+
+    // 배터리가 바닥이면 더 이상 깨어나지 않는다. 셀을 과방전에서 지킨다.
+    const bool low = u.battVolts >= 2.5f && u.battPercent <= BATT_CUTOFF_PERCENT;
+    sleepAgain(low);
 }
 
 void loop() {
@@ -653,6 +863,9 @@ void loop() {
     if (millis() - lastStatusMs > kStatusPeriodMs) {
         lastStatusMs = millis();
         pollSlowStatus();
+        if (batteryCutoffDue()) {
+            powerOff(true);  // 돌아오지 않는다
+        }
     }
 
     // ── ePaper ───────────────────────────────────────────────────

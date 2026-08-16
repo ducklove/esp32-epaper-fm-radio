@@ -82,7 +82,9 @@ bool ES8311::begin(uint8_t sda, uint8_t scl, uint32_t sampleRate, uint8_t bitsPe
     _ok = false;
     _paPin = paPin;
 
-    Wire.end();
+    // Wire.end() 를 부르지 않는다. 같은 버스에 RTC(PCF85063)와 온습도 센서
+    // (SHTC3)가 물려 있어서, 재개할 때마다 버스를 내렸다 올리면 그쪽 접근과
+    // 부딪힌다. Wire.begin() 은 여러 번 불러도 문제없다.
     if (!Wire.begin(sda, scl, 100000UL)) {
         RLOGE("I2C begin 실패 (sda=%d scl=%d)", sda, scl);
         return false;

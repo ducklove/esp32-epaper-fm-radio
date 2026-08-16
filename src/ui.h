@@ -27,14 +27,29 @@ struct UiState {
     int16_t   wifiRssi = 0;       // dBm (진단용)
     float     battVolts = 0.0f;   // 0 이면 배터리 아이콘 숨김
     uint8_t   battPercent = 0;
+
+    bool      hasTime = false;    // RTC 시각이 유효한지
+    uint8_t   hour = 0;
+    uint8_t   minute = 0;
+    uint8_t   month = 0;          // 1~12, 0 이면 날짜 표시 안 함
+    uint8_t   day = 0;
+    uint8_t   weekday = 0;        // 0 = 일요일
+
+    bool      hasEnv = false;     // SHTC3 값이 유효한지
+    float     tempC = 0.0f;
+    float     humidity = 0.0f;
 };
 
 // RSSI(dBm) → 막대 0~3칸
 uint8_t rssiToBars(int32_t rssi);
 
-void uiBegin();
+// initial=false 로 부르면 패널이 이전 이미지를 유지하고 있다고 보고 부분 갱신을
+// 이어서 쓴다. 딥슬립에서 깨어나 시계만 고칠 때 쓴다 — true 로 부르면 GxEPD2 가
+// 다음 갱신을 전체 갱신으로 승격시켜 1분마다 화면이 번쩍인다.
+void uiBegin(bool initial = true);
 // 화면을 다시 그린다. force 가 true 면 잔상 제거용 전체 갱신을 수행한다.
 void uiRender(const UiState& s, bool forceFull = false);
-// 전원 끔 화면. ePaper 는 전원이 끊겨도 그림이 남으므로 이대로 유지된다.
-void uiRenderOff(const UiState& s);
+// 전원 끔 화면 — 시계 / 온습도 / 배터리. ePaper 는 전원이 끊겨도 그림이 남는다.
+// 1분마다 갱신하므로 기본은 부분 갱신이고, 30회마다 잔상을 털어낸다.
+void uiRenderOff(const UiState& s, bool forceFull = false);
 void uiSleep();

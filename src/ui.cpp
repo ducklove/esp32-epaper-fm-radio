@@ -4,6 +4,7 @@
 #include <SPI.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
 
 #include "config.h"
@@ -106,7 +107,14 @@ void drawHeader(const UiState& s) {
     display.setTextColor(GxEPD_WHITE);
     display.setFont(&FreeSansBold9pt7b);
     display.setCursor(6, 15);
-    display.print("FM RADIO");
+    // 고정된 제목보다 시계가 쓸모 있다. 시각이 없으면 원래 제목으로 돌아간다.
+    if (s.hasTime) {
+        char clk[8];
+        snprintf(clk, sizeof(clk), "%02u:%02u", (unsigned)s.hour, (unsigned)s.minute);
+        display.print(clk);
+    } else {
+        display.print("FM");
+    }
 
     drawWifiIcon(s, 112);
     drawBattery(s, 160);
@@ -235,15 +243,17 @@ uint8_t rssiToBars(int32_t rssi) {
     return 0;
 }
 
-void uiBegin() {
+void uiBegin(bool initial) {
     // GxEPD2 는 전역 SPI 인스턴스를 쓴다. MISO 는 안 쓰므로 -1.
     SPI.end();
     SPI.begin(PIN_EPD_SCK, -1, PIN_EPD_MOSI, PIN_EPD_CS);
 
-    display.init(115200, true, 2, false);
+    display.init(115200, initial, 2, false);
     display.setRotation(0);
     display.setTextWrap(false);
-    sinceFullRefresh = 0xFFFF;  // 첫 렌더는 무조건 전체 갱신
+    // 전원을 새로 넣은 경우에만 첫 렌더를 전체 갱신으로. 딥슬립에서 깨어난
+    // 경우는 패널이 이전 이미지를 그대로 갖고 있으므로 부분 갱신을 이어 쓴다.
+    sinceFullRefresh = initial ? 0xFFFF : 0;
 }
 
 void uiRender(const UiState& s, bool forceFull) {
@@ -268,39 +278,90 @@ void uiRender(const UiState& s, bool forceFull) {
     display.hibernate();
 }
 
-void uiRenderOff(const UiState& s) {
-    // 잔상이 남으면 꺼진 채로 계속 보이므로 전체 갱신으로 깨끗하게 지운다.
-    display.setFullWindow();
-    sinceFullRefresh = 0;
+void drawOffScreen(const UiState& s) {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
 
-    display.firstPage();
-    do {
-        display.fillScreen(GxEPD_WHITE);
-        display.setTextColor(GxEPD_BLACK);
-
+    // ── 시계 ─────────────────────────────────────────────────────
+    if (s.hasTime) {
+        char clk[8];
+        snprintf(clk, sizeof(clk), "%02u:%02u", (unsigned)s.hour, (unsigned)s.minute);
         display.setFont(&FreeSansBold24pt7b);
-        drawCentered("OFF", W / 2, 92);
+        drawCentered(clk, W / 2, 62);
 
-        // 마지막으로 듣던 채널을 남겨 둔다 — 다시 켜면 여기로 돌아온다.
-        char freq[10];
-        snprintf(freq, sizeof(freq), "%.1f MHz", s.freq);
-        display.setFont(&FreeSansBold9pt7b);
-        drawCentered(freq, W / 2, 122);
-        display.setFont(&FreeSans9pt7b);
-        drawCentered(s.name.isEmpty() ? "---" : s.name.c_str(), W / 2, 142);
+        if (s.month > 0) {
+            static const char* kWday[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+            char date[24];
+            snprintf(date, sizeof(date), "%u/%u  %s", (unsigned)s.month, (unsigned)s.day,
+                     kWday[s.weekday % 7]);
+            display.setFont(&FreeSans9pt7b);
+            drawCentered(date, W / 2, 86);
+        }
+    } else {
+        display.setFont(&FreeSansBold24pt7b);
+        drawCentered("OFF", W / 2, 70);
+    }
 
-        display.drawFastHLine(30, 160, W - 60, GxEPD_BLACK);
+    display.drawFastHLine(24, 100, W - 48, GxEPD_BLACK);
+
+    // ── 온습도 ───────────────────────────────────────────────────
+    if (s.hasEnv) {
+        char t[12], h[12];
+        snprintf(t, sizeof(t), "%.1fC", s.tempC);
+        snprintf(h, sizeof(h), "%.0f%%", s.humidity);
+        display.setFont(&FreeSansBold12pt7b);
+        drawCentered(t, W / 4 + 8, 130);
+        drawCentered(h, W * 3 / 4 - 8, 130);
 
         display.setFont(nullptr);
         display.setTextSize(1);
-        drawCentered("PRESS PWR TO WAKE", W / 2, 178);
+        drawCentered("TEMP", W / 4 + 8, 145);
+        drawCentered("HUMID", W * 3 / 4 - 8, 145);
+    }
 
-        if (s.battVolts >= 2.5f) {
-            char b[16];
-            snprintf(b, sizeof(b), "%u%%  %.1fV", (unsigned)s.battPercent, s.battVolts);
-            drawCentered(b, W / 2, 192);
-        }
+    // ── 배터리 ───────────────────────────────────────────────────
+    if (s.battVolts >= 2.5f) {
+        constexpr int16_t by = 158, bw = 60, bh = 16;
+        const int16_t bx = (W - bw) / 2 - 6;
+        display.drawRect(bx, by, bw, bh, GxEPD_BLACK);
+        display.fillRect(bx + bw, by + 4, 4, bh - 8, GxEPD_BLACK);
+        const int16_t fill = (int16_t)((int32_t)(bw - 4) * s.battPercent / 100);
+        if (fill > 0) display.fillRect(bx + 2, by + 2, fill, bh - 4, GxEPD_BLACK);
+
+        char b[20];
+        snprintf(b, sizeof(b), "%u%%   %.2fV", (unsigned)s.battPercent, s.battVolts);
+        display.setFont(&FreeSans9pt7b);
+        drawCentered(b, W / 2, 190);
+    }
+
+    // 마지막으로 듣던 채널 — 다시 켜면 여기로 돌아간다.
+    display.setFont(nullptr);
+    display.setTextSize(1);
+    char last[28];
+    snprintf(last, sizeof(last), "%.1f  %s", s.freq,
+             s.name.isEmpty() ? "---" : s.name.c_str());
+    display.setCursor(4, 4);
+    display.print(last);
+}
+
+void uiRenderOff(const UiState& s, bool forceFull) {
+    // 1분마다 전체 갱신을 하면 그때마다 화면이 번쩍이고 2초씩 걸린다.
+    // 평소엔 부분 갱신으로 조용히 숫자만 바꾸고, 잔상이 쌓일 즈음에만 털어낸다.
+    const bool full = forceFull || sinceFullRefresh >= 30;
+    if (full) {
+        display.setFullWindow();
+        sinceFullRefresh = 0;
+    } else {
+        display.setPartialWindow(0, 0, W, H);
+        sinceFullRefresh++;
+    }
+
+    display.firstPage();
+    do {
+        drawOffScreen(s);
     } while (display.nextPage());
+
+    display.hibernate();
 }
 
 void uiSleep() {

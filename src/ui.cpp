@@ -360,6 +360,14 @@ void drawOffScreen(const UiState& s, bool frozen) {
     }
 }
 
+void uiRenderOffToPrevious(const UiState& s, bool frozen) {
+    display.setPartialWindow(0, 0, W, H);
+    display.firstPage();
+    do {
+        drawOffScreen(s, frozen);
+    } while (display.nextPageToPrevious());
+}
+
 void uiRenderOff(const UiState& s, bool forceFull, bool frozen) {
     // 1분마다 전체 갱신을 하면 그때마다 화면이 번쩍이고 2초씩 걸린다.
     // 평소엔 부분 갱신으로 조용히 숫자만 바꾸고, 잔상이 쌓일 즈음에만 털어낸다.

@@ -54,4 +54,12 @@ void uiRender(const UiState& s, bool forceFull = false);
 // frozen=true 면 시계 갱신이 멈춘다는 표시를 남긴다. 완전한 딥슬립에서는
 // 화면이 그 시점에 멈추는데, 표시가 없으면 시계가 고장난 것처럼 보인다.
 void uiRenderOff(const UiState& s, bool forceFull = false, bool frozen = false);
+
+// 화면에 내보내지 않고 컨트롤러의 '이전 이미지' 버퍼(0x26)에만 그린다.
+//
+// 부분 갱신은 이전 이미지와 새 이미지의 차분으로 동작한다. 딥슬립에서 깨어나면
+// 하드웨어 리셋을 거치기 때문에 컨트롤러가 이전 이미지를 그대로 갖고 있다고
+// 믿을 수 없다. 그래서 직전 화면을 여기로 다시 그려 넣은 뒤 부분 갱신을 한다.
+// 그러면 무엇이 살아남았든 차분이 항상 맞는다.
+void uiRenderOffToPrevious(const UiState& s, bool frozen = false);
 void uiSleep();

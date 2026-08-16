@@ -76,6 +76,20 @@ RTC_DATA_ATTR static uint8_t  rtcVolume = kDefaultVolume;
 RTC_DATA_ATTR static uint32_t rtcLastNtpEpoch = 0;
 RTC_DATA_ATTR static uint16_t rtcClockTicks = 0;
 
+// 부분 갱신의 기준이 될 '직전 화면'. 딥슬립을 건너 살아남아야 한다.
+// 화면 전체를 담을 필요는 없다 — 이 값들로 같은 그림을 다시 그릴 수 있다.
+struct ClockSnapshot {
+    bool    valid;
+    bool    hasTime;
+    bool    hasEnv;
+    bool    frozen;
+    uint8_t hour, minute, month, day, weekday;
+    uint8_t battPercent;
+    uint8_t stationIndex;
+    float   tempC, humidity, battVolts;
+};
+RTC_DATA_ATTR static ClockSnapshot rtcPrevScreen;
+
 struct Shared {
     uint8_t   index = kDefaultIndex;
     uint8_t   volume = kDefaultVolume;
@@ -160,6 +174,46 @@ static void syncNtpIfDue() {
     if (epoch < rtcLastNtpEpoch || epoch - rtcLastNtpEpoch >= NTP_RESYNC_SEC) {
         syncNtp();
     }
+}
+
+// 직전 화면을 기억해 두었다가, 다음 갱신 때 부분 갱신의 기준으로 되살린다.
+static void saveClockSnapshot(const UiState& u, bool frozen) {
+    rtcPrevScreen.valid = true;
+    rtcPrevScreen.hasTime = u.hasTime;
+    rtcPrevScreen.hasEnv = u.hasEnv;
+    rtcPrevScreen.frozen = frozen;
+    rtcPrevScreen.hour = u.hour;
+    rtcPrevScreen.minute = u.minute;
+    rtcPrevScreen.month = u.month;
+    rtcPrevScreen.day = u.day;
+    rtcPrevScreen.weekday = u.weekday;
+    rtcPrevScreen.battPercent = u.battPercent;
+    rtcPrevScreen.stationIndex = rtcStationIndex;
+    rtcPrevScreen.tempC = u.tempC;
+    rtcPrevScreen.humidity = u.humidity;
+    rtcPrevScreen.battVolts = u.battVolts;
+}
+
+static UiState restoreClockSnapshot() {
+    UiState u;
+    const uint8_t idx =
+        (rtcPrevScreen.stationIndex < kStationCount) ? rtcPrevScreen.stationIndex : 0;
+    u.freq = kStations[idx].freq;
+    u.name = kStations[idx].name;
+    u.volumeMax = kVolumeSteps;
+    u.state = ST_PAUSED;
+    u.hasTime = rtcPrevScreen.hasTime;
+    u.hasEnv = rtcPrevScreen.hasEnv;
+    u.hour = rtcPrevScreen.hour;
+    u.minute = rtcPrevScreen.minute;
+    u.month = rtcPrevScreen.month;
+    u.day = rtcPrevScreen.day;
+    u.weekday = rtcPrevScreen.weekday;
+    u.battPercent = rtcPrevScreen.battPercent;
+    u.tempC = rtcPrevScreen.tempC;
+    u.humidity = rtcPrevScreen.humidity;
+    u.battVolts = rtcPrevScreen.battVolts;
+    return u;
 }
 
 // 모뎀 슬립을 재생/유휴 상태에 따라 갈아 끼운다. 근거는 config.h 참고.
@@ -742,6 +796,9 @@ static void powerOff(bool clockMode, const char* why) {
         // 높게 나온다. 1분 뒤 시계 갱신이 식은 값으로 덮어쓴다.
     }
     uiRenderOff(off, true, !clockMode);  // 들어갈 때 한 번은 깨끗하게
+    // 전체 갱신이라 이 그림이 컨트롤러의 이전/현재 버퍼 양쪽에 들어간다.
+    // 다음 시계 갱신이 이걸 기준으로 부분 갱신을 할 수 있다.
+    saveClockSnapshot(off, !clockMode);
 
     sleepAgain(clockMode);
 }
@@ -845,9 +902,28 @@ static void clockTick() {
     // initial=false — 패널은 하이버네이트만 됐을 뿐 이전 이미지를 갖고 있다.
     // true 로 부르면 GxEPD2 가 다음 갱신을 전체 갱신으로 승격시켜서, 1분마다
     // 1.4초씩 화면이 번쩍인다.
-    uiBegin();
-    // 30회(=30분)마다 한 번만 전체 갱신해서 잔상을 턴다.
-    uiRenderOff(u, (rtcClockTicks % 30) == 0);
+    // 부분 갱신으로 조용히 숫자만 바꾼다. 매분 전체 갱신을 하면 1.4초씩
+    // 번쩍인다.
+    //
+    // initial=false 로 열어야 GxEPD2 가 부분 갱신을 허용한다. 다만 그것만으로는
+    // 부족했다 — 부분 갱신은 컨트롤러 안의 '이전 이미지'와의 차분으로 동작하는데,
+    // 딥슬립에서 깨어나며 하드웨어 리셋을 거치면 그게 남아 있다고 믿을 수 없다.
+    // 그래서 직전 화면을 0x26 에 다시 그려 넣고 나서 갱신한다.
+    uiBegin(false);
+
+    // 잔상은 30분에 한 번 전체 갱신으로 턴다. 기억해 둔 직전 화면이 없으면
+    // 기준이 없으니 어쩔 수 없이 전체 갱신.
+    // 틱 0 은 제외한다 — 시계 모드에 들어올 때 이미 전체 갱신을 했다.
+    const bool full =
+        !rtcPrevScreen.valid ||
+        (rtcClockTicks > 0 && (rtcClockTicks % CLOCK_FULL_REFRESH_TICKS) == 0);
+    RLOGI("갱신 방식: %s (tick=%u, prev=%s)", full ? "전체" : "부분",
+          (unsigned)rtcClockTicks, rtcPrevScreen.valid ? "있음" : "없음");
+    if (!full) {
+        uiRenderOffToPrevious(restoreClockSnapshot(), rtcPrevScreen.frozen);
+    }
+    uiRenderOff(u, full);
+    saveClockSnapshot(u, false);
     rtcClockTicks++;
 
     // 배터리가 바닥이면 더 이상 깨어나지 않는다. 셀을 과방전에서 지킨다.
@@ -889,6 +965,7 @@ static void enterDeepSleepFromClock() {
 
     uiBegin();
     uiRenderOff(u, true, true);  // frozen — 시계가 멈춘다는 표시
+    saveClockSnapshot(u, true);
     sleepAgain(false);
 }
 

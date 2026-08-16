@@ -51,5 +51,7 @@ void uiBegin(bool initial = true);
 void uiRender(const UiState& s, bool forceFull = false);
 // 전원 끔 화면 — 시계 / 온습도 / 배터리. ePaper 는 전원이 끊겨도 그림이 남는다.
 // 1분마다 갱신하므로 기본은 부분 갱신이고, 30회마다 잔상을 털어낸다.
-void uiRenderOff(const UiState& s, bool forceFull = false);
+// frozen=true 면 시계 갱신이 멈춘다는 표시를 남긴다. 완전한 딥슬립에서는
+// 화면이 그 시점에 멈추는데, 표시가 없으면 시계가 고장난 것처럼 보인다.
+void uiRenderOff(const UiState& s, bool forceFull = false, bool frozen = false);
 void uiSleep();

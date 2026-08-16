@@ -63,9 +63,18 @@ constexpr bool WIFI_SLEEP_WHILE_IDLE    = true;
 constexpr uint32_t NTP_RESYNC_SEC  = 24UL * 60 * 60;  // 하루
 constexpr uint32_t NTP_TIMEOUT_MS  = 10000;
 
-// SHTC3 는 ESP32 바로 옆이라 자체 발열만큼 높게 읽힌다. Waveshare 예제도
-// 같은 값을 빼고 있다. 실제 온도와 어긋나면 여기를 조정한다.
-constexpr float SHTC3_TEMP_OFFSET_C = 4.0f;
+// SHTC3 는 ESP32 바로 옆이라 자체 발열만큼 높게 읽힌다. 다만 그 양은 고정이
+// 아니라 얼마나 오래 깨어 있었느냐에 달려 있어서, 상태별로 나눠 뺀다.
+//
+//   RUN  : 라디오 재생 중. Wi-Fi 와 CPU 가 계속 돌아 보드가 확실히 덥다.
+//          Waveshare 예제가 쓰는 값이 4도라 그대로 가져왔다.
+//   IDLE : 시계 모드. 1분 중 1초만 깨어 있어 자체 발열이 사실상 없다.
+//          여기에 4도를 빼면 오히려 실제보다 낮게 나온다.
+//
+// 둘 다 실측 없이 정한 값이라 어디까지나 어림이다. 정확히 맞추려면 시리얼
+// 로그의 raw 값을 실제 온도계와 비교해서 이 상수를 고치면 된다.
+constexpr float SHTC3_TEMP_OFFSET_RUN_C  = 4.0f;
+constexpr float SHTC3_TEMP_OFFSET_IDLE_C = 0.0f;
 
 // ── 꺼짐(시계) 모드 ───────────────────────────────────────────────
 // 전원을 끄면 완전히 잠들지 않고 1분마다 잠깐 깨어나 시각·온습도·배터리를

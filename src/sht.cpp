@@ -81,9 +81,8 @@ bool Shtc3::read(float* tempC, float* humidity) {
     const uint16_t rawT = (uint16_t)((b[0] << 8) | b[1]);
     const uint16_t rawH = (uint16_t)((b[3] << 8) | b[4]);
 
-    // 센서가 ESP32 바로 옆이라 자체 발열만큼 높게 나온다. Waveshare 예제도
-    // 같은 값(4도)을 빼고 있어서 그대로 따랐다. config.h 에서 조정 가능.
-    *tempC = 175.0f * (float)rawT / 65536.0f - 45.0f - SHTC3_TEMP_OFFSET_C;
+    // 데이터시트 그대로. 자체 발열 보정은 하지 않는다.
+    *tempC = 175.0f * (float)rawT / 65536.0f - 45.0f;
     *humidity = 100.0f * (float)rawH / 65536.0f;
     return true;
 }

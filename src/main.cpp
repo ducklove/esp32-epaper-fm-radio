@@ -476,7 +476,8 @@ static bool batteryCutoffDue() {
 static UiState  lastUi;
 static uint32_t lastUiMs = 0;
 
-static void clockTick();  // 시계 모드 (딥슬립 타이머 기상), 돌아오지 않는다
+static void clockTick();               // 시계 모드 갱신, 돌아오지 않는다
+static void enterDeepSleepFromClock(); // 시계 모드 -> 완전한 딥슬립, 돌아오지 않는다
 
 // ── OTA ───────────────────────────────────────────────────────────
 // 이 보드를 매번 뜯어서 USB 를 꽂기 번거로워서 무선 업데이트를 넣었다.
@@ -562,12 +563,35 @@ void setup() {
     sharedLock = xSemaphoreCreateMutex();
     cmdQueue = xQueueCreate(4, sizeof(Cmd));
 
+    const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+    const bool wasOff = rtcInOffMode;
+
     // 시계 모드에서 타이머로 깨어난 것이면 Wi-Fi 도, 오디오도 올리지 않는다.
     // 값만 갱신하고 곧바로 다시 잠든다 — 돌아오지 않는다.
-    if (rtcInOffMode && esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
+    if (wasOff && wakeCause == ESP_SLEEP_WAKEUP_TIMER) {
         clockTick();
     }
-    // 버튼으로 깨어났거나 전원을 새로 넣었으면 평소대로 켜진다.
+
+    // 버튼으로 깨웠다면 누른 길이로 갈린다.
+    //   짧게 : 라디오 모드로 켠다
+    //   길게 : 한 단계 더 깊이 — 시계 모드에서 완전한 딥슬립으로
+    if (wasOff && wakeCause == ESP_SLEEP_WAKEUP_EXT1) {
+        rtc_gpio_deinit((gpio_num_t)PIN_BTN_PWR);
+        rtc_gpio_deinit((gpio_num_t)PIN_BTN_BOOT);
+        pinMode(PIN_BTN_PWR, INPUT_PULLUP);
+        pinMode(PIN_BTN_BOOT, INPUT_PULLUP);
+
+        const uint32_t t0 = millis();
+        while (digitalRead(PIN_BTN_PWR) == LOW && millis() - t0 < kVeryLongPressMs) {
+            delay(20);
+        }
+        if (millis() - t0 >= kVeryLongPressMs) {
+            RLOGI("시계 모드에서 길게 누름 — 완전한 딥슬립으로");
+            enterDeepSleepFromClock();  // 돌아오지 않는다
+        }
+    }
+
+    // 전원을 새로 넣었거나 짧게 눌러 깨운 것이면 평소대로 켜진다.
     rtcInOffMode = false;
 
     powerUpRails();
@@ -681,10 +705,14 @@ void setup() {
 // 완전히 차단하는 스위치가 없어서 딥슬립으로 대신한다. ePaper 는 전원이
 // 끊겨도 그림이 남으므로 꺼진 화면이 그대로 유지된다.
 // PWR(GPIO18)을 다시 누르면 깨어나고, 그때는 setup() 부터 새로 시작한다.
-static void sleepAgain(bool lowBattery);
+static void sleepAgain(bool clockTimer);
 
-static void powerOff(bool lowBattery = false) {
-    RLOGI("%s", lowBattery ? "배터리 부족 — 자동 종료" : "전원 끔 — 딥슬립 진입");
+// 라디오 모드에서 빠져나가 잠든다.
+//
+//   clockMode=true  : 시계 모드. 1분마다 깨어나 시각·온습도를 고친다(~1mA).
+//   clockMode=false : 완전한 딥슬립. 화면은 그 시점에서 멈춘다(수십 µA).
+static void powerOff(bool clockMode, const char* why) {
+    RLOGI("%s — %s", why, clockMode ? "시계 모드" : "딥슬립");
 
     // 소리부터 끊는다. 화면 그리는 동안 계속 울리면 어색하다.
     if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
@@ -701,15 +729,20 @@ static void powerOff(bool lowBattery = false) {
     rtcClockTicks = 0;
 
     UiState off = snapshotUi();
-    if (sensor.ok()) off.hasEnv = sensor.read(&off.tempC, &off.humidity);
-    uiRenderOff(off, true);  // 들어갈 때 한 번은 깨끗하게
+    if (sensor.ok() && sensor.read(&off.tempC, &off.humidity)) {
+        off.hasEnv = true;
+        // 방금까지 계속 돌던 상태라 보드가 더워져 있다. 그만큼 빼 준다.
+        off.tempC -= SHTC3_TEMP_OFFSET_RUN_C;
+    }
+    uiRenderOff(off, true, !clockMode);  // 들어갈 때 한 번은 깨끗하게
 
-    sleepAgain(lowBattery);
+    sleepAgain(clockMode);
 }
 
 // 딥슬립 진입부. 전원을 끌 때와 시계 갱신 뒤 다시 잠들 때가 같은 코드를 쓴다.
+// clockTimer=false 면 타이머를 걸지 않아 버튼을 누를 때까지 완전히 잔다.
 // 돌아오지 않는다.
-static void sleepAgain(bool lowBattery) {
+static void sleepAgain(bool clockTimer) {
     // 누른 채로 잠들면 곧바로 다시 깨어난다. 뗄 때까지 기다린다.
     while (digitalRead(PIN_BTN_PWR) == LOW || digitalRead(PIN_BTN_BOOT) == LOW) delay(20);
     delay(100);
@@ -750,12 +783,12 @@ static void sleepAgain(bool lowBattery) {
     esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-    // 시계를 계속 보여줘야 하므로 1분마다 잠깐 깨어난다. 배터리가 바닥나면
-    // 그마저도 하지 않고 버튼을 누를 때까지 완전히 잔다.
-    if (lowBattery) {
-        RLOGI("배터리 부족 — 시계 갱신 없이 완전히 잠든다");
-    } else {
+    // 시계 모드면 1분마다 잠깐 깨어난다. 딥슬립 모드면 타이머를 걸지 않아
+    // 버튼을 누를 때까지 완전히 잔다.
+    if (clockTimer) {
         esp_sleep_enable_timer_wakeup(CLOCK_TICK_SEC * 1000000ULL);
+    } else {
+        RLOGI("타이머 없이 완전히 잠든다");
     }
 
     Serial.flush();
@@ -791,13 +824,18 @@ static void clockTick() {
         u.day = (uint8_t)now.tm_mday;
         u.weekday = (uint8_t)now.tm_wday;
     }
-    u.hasEnv = sensor.read(&u.tempC, &u.humidity);
+    float rawTemp = 0.0f;
+    u.hasEnv = sensor.read(&rawTemp, &u.humidity);
+    // 1분 중 1초만 깨어 있어 자체 발열이 거의 없다. 재생 중과 같은 값을 빼면
+    // 오히려 실제보다 낮게 나온다.
+    u.tempC = rawTemp - SHTC3_TEMP_OFFSET_IDLE_C;
     u.battVolts = battery.readVolts();
     u.battPercent = Battery::voltsToPercent(u.battVolts);
 
-    RLOGI("시계 갱신: %02u:%02u  %.1fC %.0f%%  배터리 %.2fV (%u%%)",
-          (unsigned)u.hour, (unsigned)u.minute, u.tempC, u.humidity, u.battVolts,
-          (unsigned)u.battPercent);
+    // raw 를 같이 찍어 둔다. 실제 온도계와 비교해 보정값을 정할 때 쓴다.
+    RLOGI("시계 갱신: %02u:%02u  %.1fC (raw %.1f) %.0f%%  배터리 %.2fV (%u%%)",
+          (unsigned)u.hour, (unsigned)u.minute, u.tempC, rawTemp, u.humidity,
+          u.battVolts, (unsigned)u.battPercent);
 
     // initial=false — 패널은 하이버네이트만 됐을 뿐 이전 이미지를 갖고 있다.
     // true 로 부르면 GxEPD2 가 다음 갱신을 전체 갱신으로 승격시켜서, 1분마다
@@ -809,7 +847,44 @@ static void clockTick() {
 
     // 배터리가 바닥이면 더 이상 깨어나지 않는다. 셀을 과방전에서 지킨다.
     const bool low = u.battVolts >= 2.5f && u.battPercent <= BATT_CUTOFF_PERCENT;
-    sleepAgain(low);
+    if (low) RLOGI("배터리 %u%% — 시계 갱신을 멈춘다", (unsigned)u.battPercent);
+    sleepAgain(!low);
+}
+
+// 시계 모드에서 PWR 을 길게 눌러 완전히 재우는 경로. 화면이 그 시점에서
+// 멈추므로, 시계가 멈춘 게 고장이 아니라는 걸 알 수 있게 표시를 남긴다.
+static void enterDeepSleepFromClock() {
+    powerUpRails();
+    digitalWrite(PIN_PWR_AUDIO, HIGH);
+
+    battery.begin(PIN_VBAT_ADC);
+    i2cBegin();
+    rtcClock.begin();
+    sensor.begin();
+
+    UiState u;
+    u.freq = kStations[rtcStationIndex].freq;
+    u.name = kStations[rtcStationIndex].name;
+    u.volumeMax = kVolumeSteps;
+
+    struct tm now = {};
+    if (readClock(&now)) {
+        u.hasTime = true;
+        u.hour = (uint8_t)now.tm_hour;
+        u.minute = (uint8_t)now.tm_min;
+        u.month = (uint8_t)(now.tm_mon + 1);
+        u.day = (uint8_t)now.tm_mday;
+        u.weekday = (uint8_t)now.tm_wday;
+    }
+    float rawTemp = 0.0f;
+    u.hasEnv = sensor.read(&rawTemp, &u.humidity);
+    u.tempC = rawTemp - SHTC3_TEMP_OFFSET_IDLE_C;
+    u.battVolts = battery.readVolts();
+    u.battPercent = Battery::voltsToPercent(u.battVolts);
+
+    uiBegin(false);
+    uiRenderOff(u, true, true);  // frozen — 시계가 멈춘다는 표시
+    sleepAgain(false);
 }
 
 void loop() {
@@ -837,7 +912,8 @@ void loop() {
 
     if (const uint8_t ev = btnPwr.poll()) {
         if (ev == 3) {
-            powerOff();  // 돌아오지 않는다 (딥슬립)
+            // 라디오 -> 시계 모드. 여기서 다시 길게 누르면 완전한 딥슬립.
+            powerOff(true, "전원 끔");  // 돌아오지 않는다
         } else if (ev == 2) {
             // 일시정지 토글. 뮤트와 달리 스트림과 오디오 전원까지 끊는다.
             lockShared();
@@ -864,7 +940,8 @@ void loop() {
         lastStatusMs = millis();
         pollSlowStatus();
         if (batteryCutoffDue()) {
-            powerOff(true);  // 돌아오지 않는다
+            // 배터리 보호는 시계 갱신조차 하지 않고 완전히 재운다.
+            powerOff(false, "배터리 부족");  // 돌아오지 않는다
         }
     }
 

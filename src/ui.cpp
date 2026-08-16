@@ -278,7 +278,7 @@ void uiRender(const UiState& s, bool forceFull) {
     display.hibernate();
 }
 
-void drawOffScreen(const UiState& s) {
+void drawOffScreen(const UiState& s, bool frozen) {
     display.fillScreen(GxEPD_WHITE);
     display.setTextColor(GxEPD_BLACK);
 
@@ -342,9 +342,21 @@ void drawOffScreen(const UiState& s) {
              s.name.isEmpty() ? "---" : s.name.c_str());
     display.setCursor(4, 4);
     display.print(last);
+
+    // 완전한 딥슬립이면 화면이 여기서 멈춘다. 표시가 없으면 시계가 고장난
+    // 것처럼 보이므로 검은 배지를 남긴다.
+    if (frozen) {
+        constexpr int16_t bw = 44, bh = 12;
+        const int16_t bx = W - bw - 3;
+        display.fillRect(bx, 2, bw, bh, GxEPD_BLACK);
+        display.setTextColor(GxEPD_WHITE);
+        display.setCursor(bx + 6, 5);
+        display.print("SLEEP");
+        display.setTextColor(GxEPD_BLACK);
+    }
 }
 
-void uiRenderOff(const UiState& s, bool forceFull) {
+void uiRenderOff(const UiState& s, bool forceFull, bool frozen) {
     // 1분마다 전체 갱신을 하면 그때마다 화면이 번쩍이고 2초씩 걸린다.
     // 평소엔 부분 갱신으로 조용히 숫자만 바꾸고, 잔상이 쌓일 즈음에만 털어낸다.
     const bool full = forceFull || sinceFullRefresh >= 30;
@@ -358,7 +370,7 @@ void uiRenderOff(const UiState& s, bool forceFull) {
 
     display.firstPage();
     do {
-        drawOffScreen(s);
+        drawOffScreen(s, frozen);
     } while (display.nextPage());
 
     display.hibernate();

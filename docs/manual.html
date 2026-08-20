@@ -245,12 +245,13 @@
 
 <header class="masthead">
   <div class="masthead-inner">
-    <p class="eyebrow">Waveshare ESP32-S3-ePaper-1.54 · 펌웨어 문서</p>
+    <p class="eyebrow">Waveshare ESP32-S3-ePaper-1.54 · M5Stack M5StickS3 · 펌웨어 문서</p>
     <h1>93.1 ePaper Radio</h1>
     <p class="standfirst">
       FM 튜너가 없는 보드로 만든 FM 라디오. 방송사 스트림을 Wi-Fi 로 받아
       온보드 스피커로 내보내고, 200×200 전자종이에는 실제 서울 FM 주파수를 쓴
-      아날로그 다이얼을 그린다. 사용법 · 프로그램 구조 · 기술 사양.
+      아날로그 다이얼을 그린다. 같은 펌웨어를 M5StickS3 에도 올린다.
+      사용법 · 프로그램 구조 · 기술 사양.
     </p>
 
     <div class="dial">
@@ -317,6 +318,7 @@
       <li><a href="#modes">세 가지 모드</a></li>
       <li><a href="#channels">채널</a></li>
       <li><a href="#wifi">Wi-Fi 설정</a></li>
+      <li><a href="#sticks3">다른 보드: M5StickS3</a></li>
       <li><a href="#arch">프로그램 구조</a></li>
       <li><a href="#spec">기술 사양</a></li>
       <li><a href="#traps">겪은 함정</a></li>
@@ -594,6 +596,137 @@
     </section>
 
     <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="sticks3">
+      <h2>다른 보드: M5StickS3</h2>
+      <p class="lede">
+        같은 펌웨어가 M5Stack <strong>M5StickS3</strong> 에서도 돈다. MCU
+        (ESP32-S3-PICO-1-N8R8)도 오디오 코덱(ES8311)도 같고 I2C 핀까지 우연히
+        같아서, 스트리밍 · 선국 · 채널 목록은 손대지 않고 그대로 쓴다.
+      </p>
+      <p>
+        근본적으로 다른 것은 <strong>화면</strong>이다. 전자종이는 전원을 끊어도
+        그림이 남아서 "1분마다 깨어나 시계를 고치고 다시 자는" 모드가 성립했다.
+        LCD 는 전원을 끊는 순간 화면이 사라진다. 같은 것을 하려면 백라이트를
+        계속 켜 둬야 하고, 250mAh 로는 다섯 시간이면 끝난다.
+      </p>
+      <p>
+        그래서 상시 표시를 포기하고 <strong>손목시계처럼</strong> 만들었다.
+        평소에는 화면을 끄고, 집어 들면(BMI270 가속도) 켠다. 조작이 없으면 20초
+        뒤 어두워지고 45초 뒤 꺼진다. 라디오는 화면과 무관하게 계속 재생된다.
+      </p>
+
+      <div class="grid">
+        <div class="card">
+          <p class="k">화면</p>
+          <p class="v">240×135</p>
+          <p class="n">컬러 LCD. 눕혀서 다이얼 비율에 맞춘다</p>
+        </div>
+        <div class="card">
+          <p class="k">배터리</p>
+          <p class="v">250 mAh</p>
+          <p class="n">연속 재생 두 시간 미만. 화면을 끄는 설계가 필수인 이유</p>
+        </div>
+        <div class="card">
+          <p class="k">잔량 측정</p>
+          <p class="v">PMIC</p>
+          <p class="n">ADC 분압이 아니라 M5PM1 레지스터를 직접 읽는다</p>
+        </div>
+      </div>
+
+      <h3>무엇이 달라지는가</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>같은 기능을 다른 방법으로 하거나, 하드웨어가 없어 포기한 것</caption>
+          <thead><tr><th>항목</th><th>ePaper 판</th><th>M5StickS3</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>꺼짐 상태</td>
+              <td>딥슬립으로 흉내 낸 시계 모드</td>
+              <td><strong>진짜 전원 끔.</strong> PMIC 가 레일을 내린다</td>
+            </tr>
+            <tr>
+              <td>시각 유지</td>
+              <td>PCF85063 RTC. NTP 는 하루 한 번</td>
+              <td>외장 RTC 없음. <strong>부팅할 때마다 NTP</strong></td>
+            </tr>
+            <tr>
+              <td>온습도</td>
+              <td>SHTC3</td>
+              <td>센서 없음 — 표시하지 않는다</td>
+            </tr>
+            <tr>
+              <td>배터리 잔량</td>
+              <td>GPIO4 ADC · 1:2 분압</td>
+              <td>M5PM1 레지스터 <span class="pin">0x22</span> (mV, 리틀엔디언)</td>
+            </tr>
+            <tr>
+              <td>화면 유지</td>
+              <td>전원을 끊어도 남는다</td>
+              <td>끄면 사라진다 — 움직임으로 깨운다</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>조작</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>버튼 두 개. ePaper 판의 BOOT/PWR 과 달리 둘 다 일반 버튼이다</caption>
+          <thead><tr><th>버튼</th><th>동작</th></tr></thead>
+          <tbody>
+            <tr><td class="pin">A (G11) 짧게</td><td>다음 채널</td></tr>
+            <tr><td class="pin">A 길게 0.7초</td><td>이전 채널</td></tr>
+            <tr><td class="pin">A 길게 2초</td><td>Wi-Fi 설정 포털</td></tr>
+            <tr><td class="pin">B (G12) 짧게</td><td>볼륨 +2</td></tr>
+            <tr><td class="pin">B 길게 0.7초</td><td>일시정지 / 재개</td></tr>
+            <tr><td class="pin">B 길게 2초</td><td>전원 끔</td></tr>
+            <tr><td class="pin">흔들기</td><td>화면 켜기</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>핀맵</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>M5Stack 공식 문서 기준</caption>
+          <thead><tr><th>블록</th><th>핀</th><th>비고</th></tr></thead>
+          <tbody>
+            <tr><td>ES8311 I2S</td><td class="pin">MCLK 18 · BCLK 17 · WS 15 · DOUT 14 · DIN 16</td><td>ePaper 판과 다르다</td></tr>
+            <tr><td>내부 I2C</td><td class="pin">SDA 47 · SCL 48</td><td>코덱 0x18 · PMIC 0x6E · BMI270</td></tr>
+            <tr><td>버튼</td><td class="pin">KEY1 11 · KEY2 12</td><td>풀업, Active-LOW</td></tr>
+            <tr><td>스피커 앰프</td><td class="pin">PMIC GPIO3</td><td class="hot">ESP32 핀이 아니다 — 아래 참고</td></tr>
+            <tr><td>기타</td><td class="pin">IMU INT 4 · IR TX 46 / RX 42 · 충전상태 0</td><td>—</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <p class="t">"G3" 는 ESP32 의 GPIO3 이 아니다</p>
+        <p>
+          공식 문서에 스피커 앰프(AW8737) enable 이 <code>G3</code> 로 적혀 있어
+          ESP32 핀으로 읽기 쉬운데, 실제로는 <strong>PMIC(M5PM1)의 GPIO3</strong>
+          이고 레지스터 <span class="pin">0x11</span> 의 bit3 으로 켠다. 소리가
+          안 나던 첫 원인이 이것이었다 — I2S 도 코덱도 정상인데 아무도 앰프를
+          켜 주지 않고 있었다. M5Unified 는 <code>M5.Speaker</code> 를 켤 때 같은
+          비트를 올리지만, 이 펌웨어는 I2S 를 오디오 라이브러리가 소유해야 해서
+          <code>M5.Speaker</code> 를 쓰지 않는다.
+        </p>
+      </div>
+
+      <h3>확인된 동작</h3>
+      <pre><code>[I] ES8311 발견: 0x18
+[I] 스피커 앰프 on
+[I] 코덱 준비 완료
+[I] 선국: KBS Classic FM (93.1 MHz)
+[A/bitrate (b/s)] 199574
+[I] 배터리 100% (4.21V)  Wi-Fi -66dBm  버퍼 20%  가동 1분</code></pre>
+      <p>
+        빌드 크기는 RAM 21.4%, Flash 72.1%. 업로드 뒤 새 펌웨어로 부팅하지 않으면
+        esptool 의 RTS 하드 리셋이 듣지 않은 것이니 전원을 껐다 켜면 된다.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
     <section id="arch">
       <h2>프로그램 구조</h2>
 
@@ -755,23 +888,43 @@
       </figure>
 
       <h3>파일 구성</h3>
-      <div class="tablewrap">
-        <table>
-          <caption>src/</caption>
-          <thead><tr><th>파일</th><th>역할</th></tr></thead>
-          <tbody>
-            <tr><td class="pin">main.cpp</td><td>모드 전환, 태스크 배치, 버튼, 딥슬립 진입·기상</td></tr>
-            <tr><td class="pin">config.h</td><td>핀맵과 조정 가능한 상수. 소리가 튀면 여기부터 되돌린다</td></tr>
-            <tr><td class="pin">stations.h/.cpp</td><td>채널 목록과 스트림 주소 해석</td></tr>
-            <tr><td class="pin">es8311.h/.cpp</td><td>오디오 코덱 드라이버 (재생 전용)</td></tr>
-            <tr><td class="pin">rtcclock.h/.cpp</td><td>PCF85063 RTC. BCD 레지스터 직접 처리</td></tr>
-            <tr><td class="pin">sht.h/.cpp</td><td>SHTC3 온습도 센서</td></tr>
-            <tr><td class="pin">battery.h/.cpp</td><td>시스템 전압 ADC와 잔량 환산</td></tr>
-            <tr><td class="pin">wifisetup.h/.cpp</td><td>NVS 저장과 AP 설정 포털</td></tr>
-            <tr><td class="pin">ui.h/.cpp</td><td>모든 화면. 다이얼 · 시계 · 사진 · 설정 안내</td></tr>
-            <tr><td class="pin">photo.h</td><td>200×200 1비트 사진 (자동 생성)</td></tr>
-          </tbody>
-        </table>
+      <p>
+        보드마다 다른 것(화면 · 핀맵 · 전원 관리)과 공통인 것(스트리밍 · 채널 ·
+        코덱)을 디렉토리로 갈라 두었다. <code>platformio.ini</code> 의
+        <code>build_src_filter</code> 가 env 별로 <code>common/</code> 과 해당
+        보드 디렉토리만 골라 컴파일하므로, 어느 한쪽을 손대도 다른 보드 펌웨어는
+        그대로 올라간다.
+      </p>
+      <pre><code>src/
+  common/                 두 보드가 그대로 공유
+    stations.h/.cpp       채널 목록과 스트림 주소 해석
+    es8311.h/.cpp         오디오 코덱 드라이버 (재생 전용)
+    wifisetup.h/.cpp      NVS 저장과 AP 설정 포털
+    log.h                 RLOGI/RLOGE — USB CDC 로 직접 쓴다
+    secrets.h             Wi-Fi/OTA 비밀번호 (저장소에 올리지 않음)
+  boards/
+    epaper/               Waveshare ESP32-S3-ePaper-1.54
+      main.cpp            모드 전환, 태스크 배치, 버튼, 딥슬립 진입·기상
+      config.h            핀맵과 조정 가능한 상수
+      ui.h/.cpp           다이얼 · 시계 · 사진 · 설정 안내
+      rtcclock.h/.cpp     PCF85063 RTC. BCD 레지스터 직접 처리
+      sht.h/.cpp          SHTC3 온습도 센서
+      battery.h/.cpp      시스템 전압 ADC와 잔량 환산
+      photo.h             200×200 1비트 사진 (자동 생성)
+    sticks3/              M5Stack M5StickS3
+      main.cpp  config.h  ui.h/.cpp
+      hw.h/.cpp           PMIC — 앰프 enable 과 배터리 전압
+tools/                    사진을 photo.h 로 바꾸는 스크립트</code></pre>
+      <div class="note">
+        <p class="t">코덱 드라이버는 I2C 전송을 밖에서 받는다</p>
+        <p>
+          <code>es8311.cpp</code> 는 두 보드가 공유하는데, 버스를 다루는 방법이
+          보드마다 다르다. ePaper 판은 Arduino <code>Wire</code>, StickS3 는
+          <code>M5.In_I2C</code> 다(이유는 <a href="#trap-i2c">겪은 함정</a>).
+          그래서 드라이버가 버스를 직접 열지 않고, 읽기·쓰기·프로브 세 함수를
+          <code>ES8311Bus</code> 로 받는다. 기본값은 <code>Wire</code> 라
+          ePaper 판 코드는 달라진 것이 없다.
+        </p>
       </div>
     </section>
 
@@ -850,9 +1003,11 @@
 
       <h3>빌드</h3>
       <pre><code>pip install platformio
-cp src/secrets.h.example src/secrets.h   # Wi-Fi 초기값
-pio run -t upload                        # USB
-pio run -e epaper-radio-ota -t upload    # 무선</code></pre>
+cp src/common/secrets.h.example src/common/secrets.h   # Wi-Fi 초기값
+
+pio run -e epaper  -t upload             # ePaper 판, USB
+pio run -e sticks3 -t upload             # M5StickS3, USB
+pio run -e epaper-ota -t upload          # ePaper 판, 무선</code></pre>
       <p>
         pioarduino 플랫폼(Arduino 3.3.11 / ESP-IDF 5.5)을 쓴다.
         <code>lib_ldf_mode</code> 는 기본값이어야 한다 — <code>deep+</code> 로
@@ -871,6 +1026,29 @@ pio run -e epaper-radio-ota -t upload    # 무선</code></pre>
       <p>
         같은 보드로 작업할 때 다시 밟기 쉬운 것들. 대부분 증상이 원인과 멀리
         떨어진 곳에서 나타났다.
+      </p>
+
+      <h3 id="trap-i2c">한 I2C 포트에 마스터 드라이버를 둘 올릴 수 없다</h3>
+      <p>
+        StickS3 에서 물렸다. M5Unified 는 PMIC 와 IMU 를 위해 내부 버스를 레거시
+        <code>driver/i2c.h</code> 로 잡는데, Arduino 3.x 의 <code>Wire</code> 는
+        ESP-IDF 5.5 의 새 <code>i2c_master</code> 드라이버를 쓴다. 같은 하드웨어
+        포트에 둘이 올라가면 나중 쪽 전송이 <strong>전부</strong>
+        <code>ESP_ERR_INVALID_STATE</code>(259)로 떨어진다.
+      </p>
+      <pre><code>[E][esp32-hal-i2c-ng.c:372] i2c_master_transmit_receive failed: [259]
+[E][Wire.cpp:532] requestFrom(): i2cWriteReadNonStop returned Error 259</code></pre>
+      <p>
+        증상이 셋으로 갈라져 나와서 오래 헤맸다 — 코덱을 못 찾고
+        (<code>NO CODEC</code>), 배터리가 <code>-1%</code> 로 찍히고, 그 탓에
+        오디오 태스크가 아예 뜨지 않아 버퍼가 <code>0%</code> 였다. 셋 다 버스
+        하나가 죽어서 생긴 결과다.
+      </p>
+      <p>
+        <code>Wire.begin()</code> 을 중복 호출하지 않게 고치는 것으로는 낫지
+        않는다. 원인은 호출 횟수가 아니라 <strong>드라이버가 둘</strong>이라는
+        것이다. 버스 주인을 하나로 정해야 한다 — StickS3 는
+        <code>Wire</code> 를 쓰지 않고 전부 <code>M5.In_I2C</code> 로 보낸다.
       </p>
 
       <h3>GPIO17 을 내리면 보드가 스스로 꺼진다</h3>

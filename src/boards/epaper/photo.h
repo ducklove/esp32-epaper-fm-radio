@@ -1,4 +1,4 @@
-// 자동 생성 — 편집하지 말 것 (scratchpad/mkheader.py)
+// 자동 생성 — 편집하지 말 것 (tools/png_to_header.py)
 // 원본 사진을 200x200 1비트로 변환한 것. 비트 1 = 검정.
 #pragma once
 

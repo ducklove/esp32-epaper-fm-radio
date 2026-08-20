@@ -403,10 +403,37 @@ src/
       main.cpp  config.h  ui.*  battery.*  rtcclock.*  sht.*  photo.h
     sticks3/              M5Stack M5StickS3
       main.cpp  config.h  ui.*  hw.*
+tools/                    사진을 photo.h 로 바꾸는 스크립트
 ```
 
 `platformio.ini` 의 `build_src_filter` 가 env 별로 `common/` + 해당 보드
 디렉토리만 컴파일한다.
+
+공용 코덱 드라이버는 두 보드가 그대로 쓰는데 버스를 다루는 방법이 다르다 —
+ePaper 판은 Arduino `Wire`, StickS3 는 `M5.In_I2C` 다. 그래서 드라이버가 버스를
+직접 열지 않고 읽기·쓰기·프로브 세 함수를 `ES8311Bus` 로 받는다. 기본값이
+`Wire` 라 ePaper 판 코드는 달라진 것이 없다.
+
+### tools/ — 딥슬립 화면 사진
+
+ePaper 판 딥슬립 화면에 띄우는 사진은 `src/boards/epaper/photo.h` 에 200×200
+1비트 배열로 박혀 있다. 만드는 과정은 두 단계다.
+
+```bash
+python tools/photo_crop.py 원본.jpg out/ --head-cx 237.6 --head-top 165
+python tools/png_to_header.py out/f_tight.png src/boards/epaper/photo.h PHOTO
+```
+
+자르기를 이미지 중심이 아니라 **머리 중심** 기준으로 한다. 가운데를 잘랐더니
+인물이 눈에 띄게 오른쪽으로 밀려 보였는데, 원본에서 머리 중심이 이미지 중심보다
+20px 오른쪽에 있었기 때문이다. `--head-cx` / `--head-top` 기본값은 원래 쓴
+사진에서 잰 값이라 다른 사진을 넣을 때는 다시 재야 한다.
+
+`photo_crop.py` 는 `tight` / `mid` / `wide` 세 크기를 한꺼번에 뽑고 3배로 확대해
+나란히 붙인 `compare.png` 도 남긴다. 눈으로 고르라는 것이다. 전자종이는 중간
+톤이 없어서 축소·2치화 결과가 원본과 꽤 달라 보이므로 실제 결과물을 봐야 한다.
+
+원본 사진은 저장소에 넣지 않았다.
 
 오디오는 `audioTask`(core 1, 우선순위 3)에서만 만진다. ePaper 갱신은 한 번에 1초
 가까이 걸리는데, 이쪽은 우선순위 1인 `loopTask` 에서 돌기 때문에 화면을 그리는 동안

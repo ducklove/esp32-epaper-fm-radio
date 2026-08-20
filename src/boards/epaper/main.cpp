@@ -27,6 +27,7 @@
 #include <ArduinoOTA.h>
 #include <Audio.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 

@@ -1,10 +1,27 @@
-# ESP32-S3 ePaper FM Radio
+# ESP32-S3 인터넷 FM 라디오
 
-Waveshare **ESP32-S3-ePaper-1.54** 보드로 만든 FM 라디오.
+ESP32-S3 보드로 만든 한국 FM 라디오. **보드 두 종류**를 한 저장소에서 빌드한다.
+
+| 보드 | 화면 | PlatformIO env | 특징 |
+|---|---|---|---|
+| Waveshare **ESP32-S3-ePaper-1.54** | ePaper 200×200 | `epaper` | 전원을 끊어도 그림이 남아 시계 모드가 성립 |
+| M5Stack **M5StickS3** | LCD 240×135 | `sticks3` | 손목시계처럼 — 평소 화면 끄고 집어 들면 켜짐 |
+
+MCU(ESP32-S3-PICO-1-N8R8)도 오디오 코덱(ES8311)도 같아서 스트리밍·선국·채널
+목록은 그대로 공유하고, 화면과 전원 관리만 보드별로 나뉜다.
+
+```bash
+pio run -e epaper  -t upload      # ePaper 판
+pio run -e sticks3 -t upload      # M5StickS3
+```
+
+기본 env 는 `epaper` 라 `-e` 를 빼면 그쪽이 올라간다. 아래 설명은 따로 표시가
+없으면 ePaper 판 기준이고, StickS3 는 [M5StickS3](#m5sticks3) 절에 모아 두었다.
 
 ## 먼저 알아둘 것 — 왜 "인터넷 스트리밍"인가
 
-이 보드에는 **FM 튜너 칩이 없다.** `esptool` 로 직접 읽은 온보드 구성은 다음과 같다.
+두 보드 모두 **FM 튜너 칩이 없다.** ePaper 판을 `esptool` 로 직접 읽은 온보드
+구성은 다음과 같다.
 
 ```
 Chip type : ESP32-S3-PICO-1 (LGA56) rev v0.2
@@ -25,10 +42,10 @@ FM 방송 그대로이고, ePaper 에는 각 채널의 **실제 서울 FM 주파
 진짜로 전파를 받고 싶다면 RDA5807M 같은 I2C FM 튜너 모듈을 확장 헤더(2×6, 2.54mm)에
 물려야 한다. 모듈의 아날로그 출력을 ES8311 입력으로 넣는 배선이 추가로 필요하다.
 
-## 하드웨어 핀맵
+## 하드웨어 핀맵 (ePaper 판)
 
 Waveshare 공식 예제([waveshareteam/ESP32-S3-ePaper-1.54](https://github.com/waveshareteam/ESP32-S3-ePaper-1.54))에서
-확인한 값이며 `src/config.h` 에 그대로 들어 있다.
+확인한 값이며 `src/boards/epaper/config.h` 에 그대로 들어 있다.
 
 | 블록 | 핀 |
 |---|---|
@@ -44,7 +61,7 @@ Waveshare 공식 예제([waveshareteam/ESP32-S3-ePaper-1.54](https://github.com/
 
 ## 채널
 
-`src/stations.h` — `mad-for-audio` 프로젝트의 `stations.js` 와 같은 소스를 쓴다.
+`src/common/stations.h` — `mad-for-audio` 프로젝트의 `stations.js` 와 같은 소스를 쓴다.
 주파수 오름차순으로 15개.
 
 | MHz | 채널 | 방식 |
@@ -71,9 +88,10 @@ KBS/MBC/SBS 스트림 URL 에는 만료되는 서명이 붙어 있어서, 선국
 EBS 는 `stations.js` 쪽 `familypc` 스트림이 640×360 영상을 함께 실어 보낸다.
 ESP32 의 TS 디먹서가 감당하지 못해 오디오 전용 AAC 스트림으로 바꿔 두었다.
 
-## 조작
+## 조작 (ePaper 판)
 
-버튼이 두 개뿐이라 이렇게 나눴다.
+버튼이 두 개뿐이라 이렇게 나눴다. StickS3 는 버튼 이름과 배치가 달라
+[따로 정리해 두었다](#조작-1).
 
 | 버튼 | 동작 |
 |---|---|
@@ -121,7 +139,7 @@ BOOT 면 딥슬립. 누른 길이는 보지 않는다. 처음에는 길이로 �
 | 일시정지 | ~15\~20mA | 스트림 종료 + 오디오 전원 차단. Wi-Fi 는 유휴로 남겨 OTA 가 살아 있고 재개가 즉시 된다 |
 | 전원 끔 (시계) | ~1mA | 딥슬립. 1분마다 잠깐 깨어나 시계를 갱신한다 |
 
-## 시계 / 온습도
+## 시계 / 온습도 (ePaper 판)
 
 온보드 **PCF85063 RTC**(I2C 0x51)와 **SHTC3 온습도 센서**(0x70)를 쓴다.
 
@@ -208,6 +226,86 @@ EPD 전원 레일도 끄지 않는다. 하이버네이트된 패널은 1µA 수�
 물리 전원 스위치는 보드에 없다. 딥슬립이 그 자리를 대신하며, 완전 차단은
 배터리를 뽑는 수밖에 없다.
 
+## M5StickS3
+
+M5Stack **M5StickS3**. MCU 도 코덱도 ePaper 판과 같은 ESP32-S3-PICO-1-N8R8 +
+ES8311 이라 스트리밍 경로는 그대로 쓴다. 근본적으로 다른 것은 **화면**이다.
+
+전자종이는 전원을 끊어도 그림이 남아서 "1분마다 깨어나 시계를 고치고 다시 자는"
+모드가 성립했다. LCD 는 전원을 끊는 순간 화면이 사라진다. 같은 것을 하려면
+백라이트를 계속 켜 둬야 하고, 250mAh 로는 다섯 시간이면 끝난다.
+
+그래서 **상시 표시를 포기하고 손목시계처럼 만들었다.** 평소에는 화면을 끄고,
+집어 들면(BMI270 가속도) 켠다. 라디오는 화면과 무관하게 계속 재생된다.
+
+### 핀맵
+
+| 블록 | 핀 |
+|---|---|
+| ES8311 I2S | MCLK=18, BCLK=17, WS=15, DOUT=14, DIN=16 |
+| 내부 I2C | SDA=47, SCL=48 — ES8311 0x18, M5PM1 PMIC 0x6E, BMI270 |
+| 버튼 | KEY1=11 (앞면 큰 것), KEY2=12 (옆면) |
+| 그 외 | IMU INT=4, IR TX=46 / RX=42, 충전 상태=0 |
+
+I2C 핀이 ePaper 판과 우연히 같아서 코덱 드라이버를 그대로 쓴다.
+
+**스피커 앰프(AW8737) enable 은 ESP32 핀이 아니다.** 공식 문서에 `G3` 로 적혀
+있어 GPIO3 으로 읽기 쉬운데, 실제로는 **PMIC(M5PM1)의 GPIO3** 이고 레지스터
+`0x11` 의 bit3 으로 켠다. 소리가 안 나던 첫 원인이 이것이었다 — I2S 도 코덱도
+정상인데 아무도 앰프를 켜 주지 않았다.
+
+### 조작
+
+| 버튼 | 동작 |
+|---|---|
+| A(G11) 짧게 | 다음 채널 |
+| A 길게 (0.7초+) | 이전 채널 |
+| A 아주 길게 (2초+) | Wi-Fi 설정 포털 |
+| B(G12) 짧게 | 볼륨 +2 |
+| B 길게 (0.7초+) | 일시정지 / 재개 |
+| B 아주 길게 (2초+) | 전원 끔 |
+| 흔들기 / 집어 들기 | 화면 켜기 |
+
+화면은 조작이 없으면 20초 뒤 어두워지고 45초 뒤 꺼진다
+(`SCREEN_DIM_MS` / `SCREEN_OFF_MS`).
+
+### 전원
+
+전원 관리도 다르다.
+
+- **전원 끔은 진짜 전원 끔이다.** `M5.Power.powerOff()` 로 PMIC 가 레일을 내린다.
+  ePaper 판처럼 딥슬립으로 흉내 낼 필요가 없다.
+- **외장 RTC 가 없다.** ePaper 판의 PCF85063 에 해당하는 것이 없어서 시각은
+  ESP32 내부 RTC 로만 유지된다. 전원이 끊기면 잃으므로 **부팅할 때마다 NTP 를
+  받는다** (ePaper 판은 하루 한 번).
+- **온습도 센서가 없다.** SHTC3 가 없으므로 시계 화면에 기온·습도가 없다.
+- **배터리 잔량은 PMIC 에서 읽는다.** ADC 분압이 아니라 M5PM1 의 `VBAT`
+  레지스터(0x22, 리틀엔디언 mV)를 직접 읽는다. M5Unified 0.2.27 의
+  `getBatteryLevel()` 은 M5PM1 분기가 ESP32-C61 빌드에만 들어 있어 S3 에서는
+  `-1` 을 돌려준다.
+
+배터리가 250mAh 로 작아서 연속 재생은 두 시간이 안 된다. 화면을 꺼 두는 설계가
+사치가 아니라 필수인 이유다.
+
+### 확인된 동작
+
+```
+[I] ES8311 발견: 0x18
+[I] 스피커 앰프 on
+[I] 코덱 준비 완료
+[I] 선국: KBS Classic FM (93.1 MHz)
+[A/bitrate (b/s)] 199574
+[I] 배터리 100% (4.21V)  Wi-Fi -66dBm  버퍼 20%  가동 1분
+```
+
+빌드 크기는 RAM 21.4%, Flash 72.1%.
+
+### 플래시가 안 될 때
+
+이 보드는 esptool 의 RTS 하드 리셋이 듣지 않을 때가 있다. 업로드가 끝나고도
+새 펌웨어로 부팅하지 않으면 전원을 껐다 켜면 된다. 다운로드 모드에서는
+`COM8` 로 잡힌다(`platformio.ini` 의 `upload_port`).
+
 ## 빌드 & 플래시
 
 PlatformIO Core 가 필요하다.
@@ -219,15 +317,16 @@ pip install platformio
 Wi-Fi 정보를 넣는다.
 
 ```bash
-cp src/secrets.h.example src/secrets.h
+cp src/common/secrets.h.example src/common/secrets.h
 ```
 
-`src/secrets.h` 는 `.gitignore` 에 걸려 있어 저장소에 올라가지 않는다.
+`src/common/secrets.h` 는 `.gitignore` 에 걸려 있어 저장소에 올라가지 않는다.
 
 빌드 후 업로드:
 
 ```bash
-pio run -t upload
+pio run -e epaper  -t upload
+pio run -e sticks3 -t upload
 ```
 
 시리얼 로그:
@@ -236,18 +335,19 @@ pio run -t upload
 pio device monitor
 ```
 
-`platformio.ini` 의 `upload_port` / `monitor_port` 는 `COM5` 로 잡혀 있다. 포트가
-다르면 그 줄을 고치거나 두 줄을 지워서 자동 탐색에 맡기면 된다.
+`platformio.ini` 의 `upload_port` / `monitor_port` 는 env 별로 잡혀 있다
+(ePaper `COM5`, StickS3 `COM8`). 포트가 다르면 그 줄을 고치거나 두 줄을 지워서
+자동 탐색에 맡기면 된다.
 
 ### 무선 업데이트 (OTA)
 
 OTA 가 들어간 펌웨어를 USB 로 한 번 올린 뒤부터는 Wi-Fi 로 갱신할 수 있다.
 
 ```bash
-pio run -e epaper-radio-ota -t upload
+pio run -e epaper-ota -t upload
 ```
 
-비밀번호는 `src/secrets.h` 의 `OTA_PASSWORD` 이고 `platformio.ini` 의 `--auth`
+비밀번호는 `src/common/secrets.h` 의 `OTA_PASSWORD` 이고 `platformio.ini` 의 `--auth`
 값과 맞아야 한다.
 
 `upload_port` 는 호스트네임이 아니라 **IP 로 적어 두었다.** ISP 가 존재하지 않는
@@ -279,7 +379,7 @@ cmd //c mklink /J C:\pio C:\Users\%USERNAME%\.platformio
 이후 빌드할 때마다 `PLATFORMIO_CORE_DIR=C:\pio` 를 지정한다.
 
 ```bash
-PLATFORMIO_CORE_DIR=C:\pio pio run -t upload
+PLATFORMIO_CORE_DIR=C:\pio pio run -e epaper -t upload
 ```
 
 (레지스트리의 `LongPathsEnabled` 를 켜는 방법도 있지만 시스템 전역 설정이라
@@ -287,14 +387,26 @@ PLATFORMIO_CORE_DIR=C:\pio pio run -t upload
 
 ## 구조
 
+보드마다 다른 것(화면·핀맵·전원 관리)과 공통인 것(스트리밍·채널·코덱)을
+디렉토리로 갈라 두었다. 어느 한쪽을 손대도 다른 보드 펌웨어는 그대로 올라간다.
+
 ```
 src/
-  main.cpp      선국·버튼·태스크 배치
-  config.h      핀맵 (Waveshare 예제 기준)
-  es8311.h/cpp  ES8311 코덱 드라이버 (재생 전용)
-  stations.h/cpp 채널 목록 + 스트림 URL 해석
-  ui.h/cpp      ePaper FM 다이얼 화면
+  common/                 두 보드가 그대로 공유
+    stations.h/cpp        채널 목록 + 스트림 URL 해석
+    es8311.h/cpp          ES8311 코덱 드라이버 (재생 전용)
+    wifisetup.h/cpp       NVS 저장 + SoftAP 설정 포털
+    log.h                 RLOGI/RLOGE — USB CDC 로 직접 쓴다
+    secrets.h             Wi-Fi/OTA 비밀번호 (gitignore)
+  boards/
+    epaper/               Waveshare ESP32-S3-ePaper-1.54
+      main.cpp  config.h  ui.*  battery.*  rtcclock.*  sht.*  photo.h
+    sticks3/              M5Stack M5StickS3
+      main.cpp  config.h  ui.*  hw.*
 ```
+
+`platformio.ini` 의 `build_src_filter` 가 env 별로 `common/` + 해당 보드
+디렉토리만 컴파일한다.
 
 오디오는 `audioTask`(core 1, 우선순위 3)에서만 만진다. ePaper 갱신은 한 번에 1초
 가까이 걸리는데, 이쪽은 우선순위 1인 `loopTask` 에서 돌기 때문에 화면을 그리는 동안
@@ -304,7 +416,7 @@ src/
 CPU 를 쓰지 않으려고 출력 샘플레이트는 스트림 원본을 그대로 따라가고, 값이 바뀔
 때마다 ES8311 클럭 계수를 다시 계산한다.
 
-## 동작 확인
+## 동작 확인 (ePaper 판)
 
 `pio run -t upload` 후 실제 보드에서 잡은 로그.
 
@@ -329,13 +441,13 @@ _Update_Part : 364263                             ← ePaper 부분 갱신 364ms
 
 이 보드에는 USB-UART 브리지가 없고 ESP32-S3 네이티브 USB 하나만 있다. Arduino 의
 `log_i`/`log_e` 는 결국 `ets_printf` → UART0(GPIO43/44) 로 나가기 때문에 화면에
-아무것도 찍히지 않는다. 그래서 이 프로젝트의 진단 출력은 `src/log.h` 의
+아무것도 찍히지 않는다. 그래서 이 프로젝트의 진단 출력은 `src/common/log.h` 의
 `RLOGI`/`RLOGE` 로 `Serial`(USB CDC)에 직접 쓴다. 오디오 라이브러리 내부 로그도
 `audio_info_callback` 을 통해 같은 경로로 흘려보낸다.
 
 조용히 쓰고 싶으면 `platformio.ini` 의 `CORE_DEBUG_LEVEL` 을 1로 낮추면 된다.
 
-## 배터리
+## 배터리 (ePaper 판)
 
 배터리는 보드에 딸려 오지 않는다. MX1.25 2핀 리튬 배터리 헤더와 충전 회로만
 있으므로 셀은 직접 달아야 한다.
@@ -367,7 +479,7 @@ _Update_Part : 364263                             ← ePaper 부분 갱신 364ms
 
 ### 전력 절감 설정
 
-`src/config.h` 에 모아 두었다. **소리가 튀면 여기부터 되돌린다.**
+`src/boards/epaper/config.h` 에 모아 두었다. **소리가 튀면 여기부터 되돌린다.**
 
 | 설정 | 값 | 절감 |
 |---|---|---|
@@ -477,6 +589,25 @@ ESP_PD_OPTION_ON)` 를 빠뜨리면 슬립 중 핀이 떠서 버튼을 눌러도
 `gpio_deep_sleep_hold_en` 으로 붙잡되, **깨어난 뒤 반드시 풀어야 한다.** 안
 풀면 `setup` 의 `digitalWrite` 가 먹히지 않아 전원이 영영 안 켜진다.
 
+**한 I2C 포트에 마스터 드라이버를 둘 올릴 수 없다.** StickS3 에서 물렸다.
+M5Unified 는 PMIC·IMU 를 위해 내부 버스를 레거시 `driver/i2c.h` 로 잡는데,
+Arduino 3.x 의 `Wire` 는 ESP-IDF 5.5 의 새 `i2c_master` 드라이버를 쓴다. 같은
+포트에 둘이 올라가면 나중 쪽 전송이 전부 `ESP_ERR_INVALID_STATE`(259)로 떨어진다.
+
+```
+[E][esp32-hal-i2c-ng.c:372] i2c_master_transmit_receive failed: [259]
+[E][Wire.cpp:532] requestFrom(): i2cWriteReadNonStop returned Error 259
+```
+
+증상이 엉뚱한 곳에 나타나서 헤맸다 — 코덱을 못 찾고(`NO CODEC`), 배터리가
+`-1%` 로 찍히고, 그래서 오디오 태스크가 아예 뜨지 않아 버퍼가 0% 였다. 셋 다
+같은 버스 하나가 죽어서 생긴 결과다. `Wire.begin()` 중복 호출만 없애서는
+낫지 않는다. 드라이버가 둘이라는 게 원인이니 **주인을 하나로** 정해야 한다.
+
+그래서 StickS3 에서는 `Wire` 를 아예 쓰지 않고 전부 `M5.In_I2C` 로 보낸다.
+공용 코덱 드라이버는 ePaper 판에서 `Wire` 를 그대로 써야 하므로, 전송 계층만
+`ES8311Bus` 로 갈아 끼울 수 있게 해 두었다.
+
 **뮤트는 전력을 아끼지 못한다.** DAC 만 막을 뿐 Wi-Fi 수신과 디코딩이 그대로
 돌아 전력의 대부분을 계속 먹는다. 스트림 자체를 끊어야 의미가 있다.
 
@@ -490,4 +621,4 @@ ESP_PD_OPTION_ON)` 를 빠뜨리면 슬립 중 핀이 떠서 버튼을 눌러도
   넣으면 둘 다 해결된다.
 - ePaper 특성상 화면 갱신이 느리다. 부분 갱신을 쓰되 12회마다 잔상 제거용 전체
   갱신을 한 번 넣는다.
-- 방송사 API/스트림 주소는 언제든 바뀔 수 있다. 바뀌면 `src/stations.h` 를 고친다.
+- 방송사 API/스트림 주소는 언제든 바뀔 수 있다. 바뀌면 `src/common/stations.h` 를 고친다.

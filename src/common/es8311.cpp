@@ -1,5 +1,7 @@
 #include "es8311.h"
 
+#include <Wire.h>
+
 #include "log.h"
 
 // ── 레지스터 (es8311_reg.h) ───────────────────────────────────────
@@ -50,20 +52,44 @@ constexpr Coeff kCoeff256[] = {
 };
 }  // namespace
 
-bool ES8311::writeReg(uint8_t reg, uint8_t val) {
-    Wire.beginTransmission(_addr);
+// ── I2C 전송 ────────────────────────────────────────────────────
+namespace {
+
+bool wireWrite(uint8_t addr, uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(addr);
     Wire.write(reg);
     Wire.write(val);
     return Wire.endTransmission() == 0;
 }
 
-bool ES8311::readReg(uint8_t reg, uint8_t* val) {
-    Wire.beginTransmission(_addr);
+bool wireRead(uint8_t addr, uint8_t reg, uint8_t* val) {
+    Wire.beginTransmission(addr);
     Wire.write(reg);
     if (Wire.endTransmission(false) != 0) return false;
-    if (Wire.requestFrom((int)_addr, 1) != 1) return false;
+    if (Wire.requestFrom((int)addr, 1) != 1) return false;
     *val = Wire.read();
     return true;
+}
+
+bool wireProbe(uint8_t addr) {
+    Wire.beginTransmission(addr);
+    return Wire.endTransmission() == 0;
+}
+
+ES8311Bus g_bus = {wireWrite, wireRead, wireProbe};
+
+}  // namespace
+
+void es8311SetBus(const ES8311Bus& bus) {
+    if (bus.write && bus.read && bus.probe) g_bus = bus;
+}
+
+bool ES8311::writeReg(uint8_t reg, uint8_t val) {
+    return g_bus.write(_addr, reg, val);
+}
+
+bool ES8311::readReg(uint8_t reg, uint8_t* val) {
+    return g_bus.read(_addr, reg, val);
 }
 
 bool ES8311::updateReg(uint8_t reg, uint8_t mask, uint8_t val) {
@@ -73,8 +99,7 @@ bool ES8311::updateReg(uint8_t reg, uint8_t mask, uint8_t val) {
 }
 
 bool ES8311::probe(uint8_t addr) {
-    Wire.beginTransmission(addr);
-    return Wire.endTransmission() == 0;
+    return g_bus.probe(addr);
 }
 
 bool ES8311::begin(uint8_t sda, uint8_t scl, uint32_t sampleRate, uint8_t bitsPerSample,
@@ -82,13 +107,9 @@ bool ES8311::begin(uint8_t sda, uint8_t scl, uint32_t sampleRate, uint8_t bitsPe
     _ok = false;
     _paPin = paPin;
 
-    // Wire.end() 를 부르지 않는다. 같은 버스에 RTC(PCF85063)와 온습도 센서
-    // (SHTC3)가 물려 있어서, 재개할 때마다 버스를 내렸다 올리면 그쪽 접근과
-    // 부딪힌다. Wire.begin() 은 여러 번 불러도 문제없다.
-    if (!Wire.begin(sda, scl, 100000UL)) {
-        RLOGE("I2C begin 실패 (sda=%d scl=%d)", sda, scl);
-        return false;
-    }
+    // 버스는 여기서 열지 않는다. 같은 버스에 RTC·온습도·PMIC 가 함께 물려
+    // 있어서, 여기서 버스를 또 초기화하면 진행 중인 다른 장치의 접근을 깨뜨린다.
+    // 버스를 여는 것도, 어느 드라이버로 열지 고르는 것도 호출하는 쪽 몫이다.
 
     // CE 핀 상태에 따라 0x18 또는 0x19
     if (probe(0x18)) {

@@ -39,3 +39,7 @@ uint8_t hwPowerSource();
 
 // 외부 전원(USB)이 물려 있는가. 위 값이 VIN/VINOUT 일 때만 참이다.
 bool hwExternalPower();
+
+// USB 입력 전압(mV). 꽂혀 있지 않으면 0 부근이다.
+// 공급이 모자라 전압이 주저앉는지 보려고 주기 로그에 같이 남긴다.
+uint16_t hwVbusMillivolts();

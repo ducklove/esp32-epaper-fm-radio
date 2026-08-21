@@ -310,6 +310,7 @@ static void pollSlowStatus() {
     const bool charging = M5.Power.isCharging() == m5::Power_Class::is_charging;
     const uint8_t src = hwPowerSource();
     const bool extPower = hwExternalPower();
+    const uint16_t vbus = hwVbusMillivolts();
 
     lockShared();
     shared.wifiRssi = rssi;
@@ -322,9 +323,9 @@ static void pollSlowStatus() {
 
     const uint32_t bufSize = audio.getInBufferSize();
     const uint32_t bufPct = bufSize ? (audio.inBufferFilled() * 100 / bufSize) : 0;
-    RLOGI("배터리 %ld%% (%.2fV%s, src=%u%s)  Wi-Fi %ddBm  버퍼 %u%%  가동 %lu분",
+    RLOGI("배터리 %ld%% (%.2fV%s, src=%u%s)  VBUS %.2fV  Wi-Fi %ddBm  버퍼 %u%%  가동 %lu분",
           (long)pct, mv / 1000.0f, charging ? ", 충전중" : "", (unsigned)src,
-          extPower ? ", 외부전원" : "", (int)rssi, (unsigned)bufPct,
+          extPower ? ", 외부전원" : "", vbus / 1000.0f, (int)rssi, (unsigned)bufPct,
           (unsigned long)(millis() / 60000));
 }
 
@@ -762,10 +763,16 @@ void loop() {
         static uint8_t strikes = 0;
         lockShared();
         const uint8_t pct = shared.battPercent;
+        const float   volts = shared.battVolts;
         const bool chg = shared.charging;
         const bool ext = shared.extPower;
         unlockShared();
-        if (!chg && !ext && pct > 0 && pct <= BATT_CUTOFF_PERCENT) {
+
+        // 유효한 측정인지는 잔량이 아니라 전압으로 가린다. PMIC 를 못 읽으면
+        // 전압이 0 으로 오는데, 잔량 0% 는 진짜로 바닥난 것일 수도 있어서
+        // 구분이 안 된다. 컷오프가 1% 라 0% 를 걸러 내면 그 아래로 떨어졌을 때
+        // 조건이 아예 맞지 않게 된다.
+        if (!chg && !ext && volts >= 2.5f && pct <= BATT_CUTOFF_PERCENT) {
             if (++strikes >= BATT_CUTOFF_STRIKES) {
                 RLOGE("배터리 %u%% (src=%u) — 자동 종료", (unsigned)pct,
                       (unsigned)hwPowerSource());

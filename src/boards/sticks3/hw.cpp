@@ -99,6 +99,10 @@ bool hwExternalPower() {
     return src == (uint8_t)m5::M5PM1_Class::vin || src == (uint8_t)m5::M5PM1_Class::vinout;
 }
 
+uint16_t hwVbusMillivolts() {
+    return M5.Power.M5pm1.getVBUSVoltage();
+}
+
 uint8_t hwBatteryPercent(uint16_t mv) {
     if (mv == 0) return 0;
     if (mv >= kCurve[0].mv) return 100;

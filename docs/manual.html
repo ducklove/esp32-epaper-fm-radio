@@ -682,7 +682,9 @@
             <tr><td class="pin">B (G12) 짧게</td><td>볼륨 +2</td></tr>
             <tr><td class="pin">B 길게 0.7초</td><td>일시정지 / 재개</td></tr>
             <tr><td class="pin">B 길게 2초</td><td>전원 끔 (채널·음량을 적어 두고 잔다)</td></tr>
-            <tr><td class="pin">PWR</td><td class="hot">펌웨어가 읽지 않는다 — PMIC 가 직접 맡는다</td></tr>
+            <tr><td class="pin">PWR 한 번</td><td class="hot">켜기 / 리셋 — 펌웨어가 읽지 않는다</td></tr>
+            <tr><td class="pin">PWR 두 번</td><td class="hot">끄기 (PMIC 가 그냥 레일을 내린다)</td></tr>
+            <tr><td class="pin">PWR 길게</td><td>다운로드 모드</td></tr>
             <tr><td class="pin">흔들기</td><td>화면 켜기</td></tr>
           </tbody>
         </table>
@@ -690,13 +692,22 @@
 
       <p>
         세 번째 버튼인 <code>PWR</code> 은 ESP32 핀에 붙어 있지 않다.
-        PMIC(M5PM1)가 직접 보고 있어서, 꺼진 상태에서 누르면 레일을 올리고(=
-        부팅) 길게 누르면 강제로 내린다. 코드에서 이 버튼이 안 보이는 이유다.
-        굳이 읽고 싶으면 <code>M5.BtnPWR</code> 로 읽을 수는 있다. 다만
-        <code>B 길게 2초</code> 로 끄면 듣던 채널과 음량을 RTC 메모리에 적어 두고
-        잠드는 반면 <code>PWR</code> 로 끄면 그냥 전원이 끊기므로, 평소에는 B 로
-        끄는 편이 낫다.
+        PMIC(M5PM1)가 직접 보고 있어서 코드에서 이 버튼이 안 보인다. 굳이 읽고
+        싶으면 <code>M5.BtnPWR</code> 로 읽을 수는 있다.
       </p>
+      <p>
+        <code>B 길게 2초</code> 로 끄면 듣던 채널과 음량을 RTC 메모리에 적어 두고
+        Wi-Fi 도 정리한 뒤 잠든다. <code>PWR</code> 두 번으로 끄면 그런 정리 없이
+        레일이 그냥 내려가므로, 평소에는 B 로 끄는 편이 낫다.
+      </p>
+      <div class="note">
+        <p class="t">버튼이 헷갈릴 때</p>
+        <p>
+          짧게 한 번씩 눌러 보면 된다. <strong>채널이 바뀌면 A</strong>,
+          <strong>볼륨이 바뀌면 B</strong>, <strong>아무 반응이 없거나 재부팅되면
+          PWR</strong> 이다.
+        </p>
+      </div>
 
       <h3>핀맵</h3>
       <div class="tablewrap">

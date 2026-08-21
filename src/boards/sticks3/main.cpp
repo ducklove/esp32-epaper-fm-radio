@@ -85,6 +85,7 @@ struct Shared {
     uint8_t   battPercent = 0;
     float     battVolts = 0.0f;
     bool      charging = false;
+    bool      extPower = false;   // USB 등 외부 전원이 물려 있는가
     int16_t   wifiRssi = 0;
     uint8_t   wifiBars = 0;
 };
@@ -306,6 +307,8 @@ static void pollSlowStatus() {
     const uint16_t mv = hwBatteryMillivolts();
     const int32_t pct = (mv > 0) ? hwBatteryPercent(mv) : -1;
     const bool charging = M5.Power.isCharging() == m5::Power_Class::is_charging;
+    const uint8_t src = hwPowerSource();
+    const bool extPower = hwExternalPower();
 
     lockShared();
     shared.wifiRssi = rssi;
@@ -313,12 +316,14 @@ static void pollSlowStatus() {
     shared.battPercent = (pct < 0) ? 0 : (uint8_t)pct;
     shared.battVolts = (mv > 0) ? mv / 1000.0f : 0.0f;
     shared.charging = charging;
+    shared.extPower = extPower;
     unlockShared();
 
     const uint32_t bufSize = audio.getInBufferSize();
     const uint32_t bufPct = bufSize ? (audio.inBufferFilled() * 100 / bufSize) : 0;
-    RLOGI("배터리 %ld%% (%.2fV%s)  Wi-Fi %ddBm  버퍼 %u%%  가동 %lu분", (long)pct,
-          mv / 1000.0f, charging ? ", 충전중" : "", (int)rssi, (unsigned)bufPct,
+    RLOGI("배터리 %ld%% (%.2fV%s, src=%u%s)  Wi-Fi %ddBm  버퍼 %u%%  가동 %lu분",
+          (long)pct, mv / 1000.0f, charging ? ", 충전중" : "", (unsigned)src,
+          extPower ? ", 외부전원" : "", (int)rssi, (unsigned)bufPct,
           (unsigned long)(millis() / 60000));
 }
 
@@ -706,14 +711,22 @@ void loop() {
         pollSlowStatus();
 
         // 배터리가 바닥나면 알아서 끈다. 재생 중 갑자기 죽는 것보다 낫다.
+        // USB 가 물려 있으면 끄지 않는다. 이 컷오프는 셀을 과방전에서 지키려는
+        // 것인데, 외부 전원으로 도는 동안에는 지킬 일이 없다.
+        //
+        // isCharging() 만 보면 부족하다. 만충이거나 입력 전류가 소비를 못 따라가면
+        // 충전이 멈춰 '충전 아님'이 되는데, 그 상태로 오래 재생하면 꽂아 둔 채로
+        // 잔량이 10% 까지 내려가 스스로 꺼져 버린다. 실제로 그렇게 꺼졌다.
         static uint8_t strikes = 0;
         lockShared();
         const uint8_t pct = shared.battPercent;
         const bool chg = shared.charging;
+        const bool ext = shared.extPower;
         unlockShared();
-        if (!chg && pct > 0 && pct <= BATT_CUTOFF_PERCENT) {
+        if (!chg && !ext && pct > 0 && pct <= BATT_CUTOFF_PERCENT) {
             if (++strikes >= BATT_CUTOFF_STRIKES) {
-                RLOGE("배터리 %u%% — 자동 종료", (unsigned)pct);
+                RLOGE("배터리 %u%% (src=%u) — 자동 종료", (unsigned)pct,
+                      (unsigned)hwPowerSource());
                 setState(ST_LOWBATT);
                 uiWake();
                 uiRender(snapshotUi());

@@ -90,6 +90,15 @@ uint16_t hwBatteryMillivolts() {
     return (uint16_t)((b[1] << 8) | b[0]);
 }
 
+uint8_t hwPowerSource() {
+    return (uint8_t)M5.Power.M5pm1.getPowerSource();
+}
+
+bool hwExternalPower() {
+    const uint8_t src = hwPowerSource();
+    return src == (uint8_t)m5::M5PM1_Class::vin || src == (uint8_t)m5::M5PM1_Class::vinout;
+}
+
 uint8_t hwBatteryPercent(uint16_t mv) {
     if (mv == 0) return 0;
     if (mv >= kCurve[0].mv) return 100;

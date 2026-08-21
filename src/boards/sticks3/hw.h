@@ -31,3 +31,11 @@ uint16_t hwBatteryMillivolts();
 
 // 전압을 0~100% 로. 부하가 걸린 1셀 리튬 방전 곡선 기준이라 어림값이다.
 uint8_t hwBatteryPercent(uint16_t mv);
+
+// PMIC 가 보는 전원 소스. 0=VIN, 1=VINOUT, 2=배터리, 3=모름.
+// isCharging() 만으로는 부족하다 — USB 를 꽂아 두어도 만충이거나 입력 전류가
+// 모자라면 '충전 중'이 아니게 되는데, 그렇다고 배터리로만 도는 것은 아니다.
+uint8_t hwPowerSource();
+
+// 외부 전원(USB)이 물려 있는가. 위 값이 VIN/VINOUT 일 때만 참이다.
+bool hwExternalPower();

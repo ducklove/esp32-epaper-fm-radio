@@ -34,6 +34,7 @@
 #include <ArduinoOTA.h>
 #include <Audio.h>
 #include <M5Unified.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
@@ -327,11 +328,40 @@ static void pollSlowStatus() {
           (unsigned long)(millis() / 60000));
 }
 
+// ── 종료 사유 표식 ────────────────────────────────────────────────
+// 왜 꺼졌는지 다음 부팅에서 알기 위한 것이다. 전원이 진짜 끊기면 RTC 메모리도
+// 같이 날아가므로 NVS 에 남긴다.
+//
+// 부팅하면 곧바로 '진행 중'으로 덮어쓴다. 그래서 다음 부팅에서 '진행 중'이
+// 그대로 읽히면, 지난 세션이 우리가 아는 방법으로 끝나지 않았다는 뜻이다 —
+// PWR 강제 종료, 전원 처짐, PMIC 보호 동작 같은 것들이다. 크래시라면
+// esp_reset_reason() 이 PANIC 이나 WDT 로 따로 말해 준다.
+enum : uint8_t { kOffRunning = 0, kOffButton = 1, kOffBattery = 2 };
+
+static uint8_t loadLastOff() {
+    Preferences p;
+    uint8_t v = kOffRunning;
+    if (p.begin("radio", true)) {
+        v = p.getUChar("lastoff", kOffRunning);
+        p.end();
+    }
+    return v;
+}
+
+static void saveLastOff(uint8_t why) {
+    Preferences p;
+    if (p.begin("radio", false)) {
+        p.putUChar("lastoff", why);
+        p.end();
+    }
+}
+
 // ── 전원 끄기 ─────────────────────────────────────────────────────
 // M5PM1 은 진짜 전원 차단을 지원한다. GPIO 를 붙잡아 두는 편법이 필요 없고,
 // 소비가 딥슬립보다도 낮다. 버튼을 누르면 다시 켜진다.
-static void powerOff() {
-    RLOGI("전원 끔");
+static void powerOff(uint8_t why) {
+    RLOGI("전원 끔 (%s)", why == kOffBattery ? "배터리" : "버튼");
+    saveLastOff(why);
     if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
     audio.stopSong();
     codec.setMute(true);
@@ -355,6 +385,9 @@ static void powerOff() {
 // ── setup / loop ──────────────────────────────────────────────────
 static UiState  lastUi;
 static uint32_t lastUiMs = 0;
+
+// 지난 세션이 정상적으로 끝나지 않았다면 부팅 화면에 적어 둔다.
+static bool lastOffAbnormal = false;
 
 // 한 번 실패했다고 바로 설정 포털로 가지 않는다. 정전 후 복구처럼 공유기가
 // 아직 안 올라왔거나 첫 인증이 어긋나는 일이 있는데, 그 상태는 기다린다고
@@ -518,6 +551,15 @@ void setup() {
             default:               why = "UNKNOWN";  break;
         }
         RLOGI("리셋 원인: %s", why);
+
+        // 지난 세션이 어떻게 끝났는지. 켜자마자 '진행 중'으로 덮어쓴다.
+        const uint8_t lastOff = loadLastOff();
+        saveLastOff(kOffRunning);
+        const char* how = lastOff == kOffButton    ? "버튼"
+                          : lastOff == kOffBattery ? "배터리 컷오프"
+                                                   : "비정상 — 전원이 그냥 끊겼거나 크래시";
+        RLOGI("지난 종료: %s", how);
+        if (lastOff == kOffRunning) lastOffAbnormal = true;
     }
 
     // 내부 I2C(SCL 48 / SDA 47)는 M5.begin() 이 이미 열어 두었다. 여기에
@@ -543,7 +585,7 @@ void setup() {
     lastUi = snapshotUi();
     uiRender(lastUi);
 
-    setState(ST_WIFI);
+    setState(ST_WIFI, lastOffAbnormal ? String("(LAST: HARD OFF)") : String());
     uiRender(snapshotUi());
 
     if (!connectWifi(kWifiAttempts)) {
@@ -677,7 +719,7 @@ void loop() {
     if (M5.BtnB.wasReleased() || M5.BtnB.wasReleaseFor(kLongPressMs)) {
         uiWake();
         if (M5.BtnB.wasReleaseFor(kVeryLongPressMs)) {
-            powerOff();  // 돌아오지 않는다
+            powerOff(kOffButton);  // 돌아오지 않는다
         } else if (M5.BtnB.wasReleaseFor(kLongPressMs)) {
             lockShared();
             const bool paused = shared.paused;
@@ -731,7 +773,7 @@ void loop() {
                 uiWake();
                 uiRender(snapshotUi());
                 delay(3000);
-                powerOff();
+                powerOff(kOffBattery);
             }
         } else {
             strikes = 0;

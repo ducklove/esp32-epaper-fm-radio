@@ -573,8 +573,10 @@
         바꿀 수 있다.</strong>
       </p>
       <p>
-        설정 화면은 두 경우에 열린다 — Wi-Fi 접속에 실패했을 때 자동으로, 또는
-        라디오 모드에서 <strong>BOOT 를 2초 이상</strong> 눌렀을 때.
+        설정 화면은 두 경우에 열린다 — 부팅할 때 <strong>Wi-Fi 접속을 세 번
+        연달아 실패하면</strong>(한 번에 12초씩 기다린다) 자동으로, 또는 라디오
+        모드에서 <strong>BOOT 를 2초 이상</strong> 눌렀을 때. 공유기가 아직 안
+        올라온 정전 직후 같은 상황 때문에 한 번 실패로는 열지 않는다.
       </p>
 
       <h4>설정 순서</h4>
@@ -671,7 +673,7 @@
       <h3>조작</h3>
       <div class="tablewrap">
         <table>
-          <caption>버튼 두 개. ePaper 판의 BOOT/PWR 과 달리 둘 다 일반 버튼이다</caption>
+          <caption>버튼은 셋이지만 펌웨어가 읽는 것은 A·B 둘뿐이다</caption>
           <thead><tr><th>버튼</th><th>동작</th></tr></thead>
           <tbody>
             <tr><td class="pin">A (G11) 짧게</td><td>다음 채널</td></tr>
@@ -679,11 +681,22 @@
             <tr><td class="pin">A 길게 2초</td><td>Wi-Fi 설정 포털</td></tr>
             <tr><td class="pin">B (G12) 짧게</td><td>볼륨 +2</td></tr>
             <tr><td class="pin">B 길게 0.7초</td><td>일시정지 / 재개</td></tr>
-            <tr><td class="pin">B 길게 2초</td><td>전원 끔</td></tr>
+            <tr><td class="pin">B 길게 2초</td><td>전원 끔 (채널·음량을 적어 두고 잔다)</td></tr>
+            <tr><td class="pin">PWR</td><td class="hot">펌웨어가 읽지 않는다 — PMIC 가 직접 맡는다</td></tr>
             <tr><td class="pin">흔들기</td><td>화면 켜기</td></tr>
           </tbody>
         </table>
       </div>
+
+      <p>
+        세 번째 버튼인 <code>PWR</code> 은 ESP32 핀에 붙어 있지 않다.
+        PMIC(M5PM1)가 직접 보고 있어서, 꺼진 상태에서 누르면 레일을 올리고(=
+        부팅) 길게 누르면 강제로 내린다. 코드에서 이 버튼이 안 보이는 이유다.
+        굳이 읽고 싶으면 <code>M5.BtnPWR</code> 로 읽을 수는 있다. 다만
+        <code>B 길게 2초</code> 로 끄면 듣던 채널과 음량을 RTC 메모리에 적어 두고
+        잠드는 반면 <code>PWR</code> 로 끄면 그냥 전원이 끊기므로, 평소에는 B 로
+        끄는 편이 낫다.
+      </p>
 
       <h3>핀맵</h3>
       <div class="tablewrap">

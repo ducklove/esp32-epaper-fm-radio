@@ -28,8 +28,10 @@
 #include <Audio.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
 
 #include "battery.h"
 #include "config.h"
@@ -46,7 +48,8 @@
 constexpr uint8_t  kVolumeSteps   = 20;
 constexpr uint8_t  kDefaultVolume = 14;
 constexpr uint8_t  kDefaultIndex  = 2;      // KBS Classic FM 93.1
-constexpr uint32_t kWifiTimeoutMs = 30000;
+constexpr uint32_t kWifiTimeoutMs = 12000;  // 한 번 시도할 때 기다리는 시간
+constexpr uint8_t  kWifiAttempts  = 3;      // 이만큼 실패해야 설정 포털로 간다
 constexpr uint32_t kLongPressMs     = 700;
 constexpr uint32_t kVeryLongPressMs = 2000;  // PWR 을 이만큼 누르면 전원 끔
 // 표시할 내용이 바뀌지 않으면 다시 그리지 않는다.
@@ -383,37 +386,73 @@ static void audioTask(void*) {
 }
 
 // ── 버튼 ──────────────────────────────────────────────────────────
+// 눌린 시간은 인터럽트에서 잰다. 폴링으로 재면 '눌림을 본 poll' 과 '뗌을 본
+// poll' 사이의 간격이 그대로 누른 시간에 더해진다. ePaper 전체 갱신은 2초를
+// 통째로 잡아먹으므로, 채널을 바꾸려고 톡 누른 것이 하필 그 앞에 걸리면
+// '아주 길게 누름'으로 둔갑해 Wi-Fi 설정 포털이 떴다.
 class Button {
   public:
     explicit Button(uint8_t pin) : _pin(pin) {}
 
-    void begin() { pinMode(_pin, INPUT_PULLUP); }
+    void begin() {
+        pinMode(_pin, INPUT_PULLUP);
+        _down = digitalRead(_pin) == LOW;
+        // 켤 때 이미 눌려 있다면 깨우려고 누른 그 버튼이다. 언제부터 눌려
+        // 있었는지 알 수 없으므로 뗄 때까지를 통째로 버린다.
+        _armed = !_down;
+        _event = 0;
+        _downUs = esp_timer_get_time();
+        attachInterruptArg(digitalPinToInterrupt(_pin), &Button::onEdge, this, CHANGE);
+    }
 
     // 눌렀다 뗐을 때 1회만 보고한다.
     // 0 = 없음, 1 = 짧게, 2 = 길게, 3 = 아주 길게
     uint8_t poll() {
-        const bool down = digitalRead(_pin) == LOW;
-        const uint32_t now = millis();
-
-        if (down && !_down) {          // 눌림 시작
-            _down = true;
-            _since = now;
-        } else if (!down && _down) {   // 뗌
-            _down = false;
-            const uint32_t held = now - _since;
-            if (held < 40) return 0;   // 채터링
-            if (held >= kVeryLongPressMs) return 3;
-            return held >= kLongPressMs ? 2 : 1;
-        }
-        return 0;
+        const uint8_t ev = _event;
+        if (ev) _event = 0;
+        return ev;
     }
 
     bool isDown() const { return _down; }
 
+    // 밀린 이벤트를 버린다. 오래 자리를 비웠다가 돌아올 때 쓴다.
+    void clear() { _event = 0; }
+
   private:
-    uint8_t  _pin;
-    bool     _down = false;
-    uint32_t _since = 0;
+    // IRAM_ATTR 을 붙이지 않는다. Arduino 코어가 GPIO ISR 서비스를
+    // ESP_INTR_FLAG_IRAM 없이 설치하고 디스패처(__onPinInterrupt)부터가 플래시에
+    // 있어서, 여기만 IRAM 에 올려 봐야 얻는 게 없다. IDF 는 플래시를 쓰는 동안
+    // IRAM 이 아닌 인터럽트를 잠시 꺼 두므로 캐시가 꺼진 채로 불릴 일도 없다.
+    // (붙이면 리터럴이 코드 뒤에 놓여 링크가 깨진다 — dangerous relocation.)
+    //
+    // 그래도 64bit 나눗셈은 피한다. 비교는 마이크로초 그대로 한다.
+    static void onEdge(void* arg) {
+        Button* b = static_cast<Button*>(arg);
+        const bool down = gpio_get_level((gpio_num_t)b->_pin) == 0;
+        if (down == b->_down) return;  // 상태가 그대로면 잡음이다
+        b->_down = down;
+
+        const int64_t now = esp_timer_get_time();
+        if (down) {
+            b->_downUs = now;
+            return;
+        }
+        if (!b->_armed) {              // 켜질 때부터 눌려 있던 것
+            b->_armed = true;
+            return;
+        }
+        const int64_t heldUs = now - b->_downUs;
+        if (heldUs < 40 * 1000) return;  // 채터링
+        b->_event = heldUs >= (int64_t)kVeryLongPressMs * 1000
+                        ? 3
+                        : (heldUs >= (int64_t)kLongPressMs * 1000 ? 2 : 1);
+    }
+
+    uint8_t          _pin;
+    volatile bool    _down = false;
+    volatile bool    _armed = false;
+    volatile uint8_t _event = 0;
+    volatile int64_t _downUs = 0;
 };
 
 static Button btnBoot(PIN_BTN_BOOT);
@@ -547,25 +586,38 @@ static UiState  lastUi;
 static uint32_t lastUiMs = 0;
 
 // NVS 에 저장된 정보로 접속한다. 저장된 게 없으면 secrets.h 의 초기값을 쓴다.
+//
+// 한 번 실패했다고 바로 설정 포털로 가지 않는다. 정전 후 복구처럼 공유기가
+// 아직 안 올라왔거나 첫 인증이 어긋나는 일이 있는데, 그 상태는 기다린다고
+// 풀리지 않는다. 접속을 처음부터 다시 걸어야 한다.
 static bool connectWifi() {
     const WifiCreds c = wifiLoadCreds();
-    RLOGI("Wi-Fi 접속 시도: %s", c.ssid.c_str());
 
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(WIFI_PS_NONE);  // 접속 과정은 확실하게
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(c.ssid.c_str(), c.pass.c_str());
+    for (uint8_t attempt = 1; attempt <= kWifiAttempts; attempt++) {
+        RLOGI("Wi-Fi 접속 시도 %u/%u: %s", (unsigned)attempt, (unsigned)kWifiAttempts,
+              c.ssid.c_str());
+        if (attempt > 1) {
+            WiFi.disconnect(true);  // 이전 시도의 찌꺼기를 지운다
+            delay(500);
+        }
 
-    const uint32_t t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < kWifiTimeoutMs) {
-        delay(250);
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(WIFI_PS_NONE);  // 접속 과정은 확실하게
+        WiFi.setAutoReconnect(true);
+        WiFi.begin(c.ssid.c_str(), c.pass.c_str());
+
+        const uint32_t t0 = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < kWifiTimeoutMs) {
+            delay(250);
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
+            return true;
+        }
+        RLOGE("Wi-Fi 접속 실패 (status=%d)", (int)WiFi.status());
     }
-    if (WiFi.status() != WL_CONNECTED) {
-        RLOGE("Wi-Fi 접속 실패: %s", c.ssid.c_str());
-        return false;
-    }
-    RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
-    return true;
+    RLOGE("Wi-Fi 접속 포기: %s — 설정 포털로", c.ssid.c_str());
+    return false;
 }
 
 // 설정 포털. AP 를 띄우고 화면에 접속 방법을 적는다. 저장되면 재시작한다.
@@ -583,6 +635,10 @@ static void runWifiPortal() {
         u.apUrl = url;
         uiRenderWifiSetup(u);
     });
+
+    // 포털이 도는 동안 눌린 것은 잊는다. 닫자마자 채널이 바뀌면 곤란하다.
+    btnBoot.clear();
+    btnPwr.clear();
 
     if (saved) {
         RLOGI("새 Wi-Fi 정보 저장됨 — 재시작");

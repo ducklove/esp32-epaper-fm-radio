@@ -10,12 +10,21 @@
 // 그래서 상시 표시를 포기하고 손목시계처럼 만든다 — 평소에는 화면을 끄고,
 // 집어 들면(BMI270 움직임 감지) 켠다. 라디오는 화면과 무관하게 계속 재생된다.
 //
-// 조작 (버튼 2개)
-//   A(G11) 짧게  : 다음 채널        A 길게 : 이전 채널
-//   B(G12) 짧게  : 볼륨 +2          B 0.7초 : 일시정지 / 재개
-//   B 2초        : 전원 끔 (딥슬립)
-//   A 2초        : Wi-Fi 설정 포털
-//   흔들기       : 화면 켜기 (움직임 감지)
+// 조작 (버튼 3개 — 앞면 A, 옆면 B, 그리고 PWR)
+//
+//   A(G11) 짧게   : 다음 채널 (주파수 오름차순)
+//   A(G11) 0.7초  : 이전 채널
+//   A(G11) 2초    : Wi-Fi 설정 포털
+//
+//   B(G12) 짧게   : 볼륨 +2 (최대에서 다시 0으로)
+//   B(G12) 0.7초  : 일시정지 / 재개
+//   B(G12) 2초    : 전원 끔 (딥슬립)
+//
+//   PWR           : 펌웨어가 읽지 않는다. PMIC(M5PM1)가 직접 맡는 버튼이라
+//                   꺼진 상태에서 누르면 전원이 올라오고(= 부팅), 길게 누르면
+//                   PMIC 가 강제로 내린다. 읽고 싶으면 M5.BtnPWR 로 읽는다.
+//
+//   흔들기        : 화면 켜기 (움직임 감지)
 #include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <Audio.h>
@@ -37,7 +46,8 @@
 constexpr uint8_t  kVolumeSteps     = 20;
 constexpr uint8_t  kDefaultVolume   = 14;
 constexpr uint8_t  kDefaultIndex    = 2;      // KBS Classic FM 93.1
-constexpr uint32_t kWifiTimeoutMs   = 30000;
+constexpr uint32_t kWifiTimeoutMs   = 12000;  // 한 번 시도할 때 기다리는 시간
+constexpr uint8_t  kWifiAttempts    = 3;      // 이만큼 실패해야 설정 포털로 간다
 constexpr uint32_t kLongPressMs     = 700;
 constexpr uint32_t kVeryLongPressMs = 2000;
 constexpr uint32_t kStatusPeriodMs  = 60000;
@@ -328,26 +338,38 @@ static void powerOff() {
 static UiState  lastUi;
 static uint32_t lastUiMs = 0;
 
+// 한 번 실패했다고 바로 설정 포털로 가지 않는다. 정전 후 복구처럼 공유기가
+// 아직 안 올라왔거나 첫 인증이 어긋나는 일이 있는데, 그 상태는 기다린다고
+// 풀리지 않는다. 접속을 처음부터 다시 걸어야 한다.
 static bool connectWifi() {
     const WifiCreds c = wifiLoadCreds();
-    RLOGI("Wi-Fi 접속 시도: %s", c.ssid.c_str());
 
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(WIFI_PS_NONE);
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(c.ssid.c_str(), c.pass.c_str());
+    for (uint8_t attempt = 1; attempt <= kWifiAttempts; attempt++) {
+        RLOGI("Wi-Fi 접속 시도 %u/%u: %s", (unsigned)attempt, (unsigned)kWifiAttempts,
+              c.ssid.c_str());
+        if (attempt > 1) {
+            WiFi.disconnect(true);  // 이전 시도의 찌꺼기를 지운다
+            delay(500);
+        }
 
-    const uint32_t t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < kWifiTimeoutMs) {
-        M5.update();   // setup 에서 30초를 통째로 막지 않는다
-        delay(100);
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(WIFI_PS_NONE);
+        WiFi.setAutoReconnect(true);
+        WiFi.begin(c.ssid.c_str(), c.pass.c_str());
+
+        const uint32_t t0 = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < kWifiTimeoutMs) {
+            M5.update();   // setup 을 통째로 막지 않는다
+            delay(100);
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
+            return true;
+        }
+        RLOGE("Wi-Fi 접속 실패 (status=%d)", (int)WiFi.status());
     }
-    if (WiFi.status() != WL_CONNECTED) {
-        RLOGE("Wi-Fi 접속 실패: %s", c.ssid.c_str());
-        return false;
-    }
-    RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
-    return true;
+    RLOGE("Wi-Fi 접속 포기: %s — 설정 포털로", c.ssid.c_str());
+    return false;
 }
 
 static void runWifiPortal() {

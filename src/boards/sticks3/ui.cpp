@@ -213,6 +213,7 @@ void uiRenderWifiSetup(const UiState& s) {
 
     canvas->setTextColor(COL_DIM, COL_BG);
     canvas->drawString("3. Enter SSID / password", 6, 106);
+    if (s.detail.length()) canvas->drawString("last: " + s.detail, 6, H - 26);
     canvas->drawString("2.4GHz only - 5 min timeout", 6, H - 14);
 
     canvas->pushSprite(0, 0);

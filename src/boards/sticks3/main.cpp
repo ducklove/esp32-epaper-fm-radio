@@ -352,10 +352,29 @@ static uint32_t lastUiMs = 0;
 // 접속이 왜 안 되는지는 이 이벤트의 reason 코드에 다 들어 있다. 2=AUTH_EXPIRE,
 // 15=4WAY_HANDSHAKE_TIMEOUT(암호가 틀렸거나 공유기가 예전 세션을 붙들고 있다),
 // 201=NO_AP_FOUND, 205=CONNECTION_FAIL.
+static volatile uint8_t lastWifiReason = 0;
+
 static void onWifiEvent(arduino_event_id_t id, arduino_event_info_t info) {
     if (id == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-        RLOGI("Wi-Fi 끊김 (reason=%u)", (unsigned)info.wifi_sta_disconnected.reason);
+        lastWifiReason = info.wifi_sta_disconnected.reason;
+        RLOGI("Wi-Fi 끊김 (reason=%u)", (unsigned)lastWifiReason);
     }
+}
+
+// 시리얼을 물리지 않아도 원인을 알 수 있게 화면에 같이 띄운다.
+static String wifiReasonText() {
+    const uint8_t r = lastWifiReason;
+    if (!r) return String();
+    const char* what = "";
+    switch (r) {
+        case 2:   what = " auth expire"; break;
+        case 15:  what = " handshake"; break;
+        case 201: what = " no AP"; break;
+        case 202: what = " auth fail"; break;
+        case 205: what = " conn fail"; break;
+        default:  break;
+    }
+    return "fail r" + String((unsigned)r) + what;
 }
 
 // 접속하지 못한 채로 부팅했는지. loop() 에서 계속 다시 붙어 본다.
@@ -408,6 +427,7 @@ static void runWifiPortal() {
             u.apSsid = ap;
             u.apPass = pass;
             u.apUrl = url;
+            u.detail = wifiReasonText();
             uiRenderWifiSetup(u);
         });
 
@@ -417,7 +437,8 @@ static void runWifiPortal() {
         ESP.restart();
     }
     RLOGE("설정 포털 시간 초과");
-    setState(ST_ERROR, "NO WIFI");
+    setState(ST_ERROR, lastWifiReason ? ("NO WIFI r" + String((unsigned)lastWifiReason))
+                                      : String("NO WIFI"));
 }
 
 static void setupOta() {

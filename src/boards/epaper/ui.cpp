@@ -510,6 +510,12 @@ void uiRenderWifiSetup(const UiState& s) {
         display.setCursor(6, 168);
         display.print("   then save. It reboots.");
 
+        if (s.detail.length()) {
+            display.setCursor(6, H - 22);
+            display.print("last: ");
+            display.print(s.detail);
+        }
+
         display.setCursor(6, H - 10);
         display.print("2.4GHz only. Times out in 5 min.");
     } while (display.nextPage());

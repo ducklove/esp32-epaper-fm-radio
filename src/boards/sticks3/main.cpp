@@ -46,7 +46,10 @@
 constexpr uint8_t  kVolumeSteps     = 20;
 constexpr uint8_t  kDefaultVolume   = 14;
 constexpr uint8_t  kDefaultIndex    = 2;      // KBS Classic FM 93.1
-constexpr uint32_t kWifiTimeoutMs   = 12000;  // 한 번 시도할 때 기다리는 시간
+// 첫 시도는 넉넉하게. 전원을 껐다 켠 직후에는 공유기가 예전 세션을 아직
+// 붙들고 있어 인증이 느려지는 일이 있다. 다시 걸 때는 조금 짧게.
+constexpr uint32_t kWifiFirstTryMs  = 25000;
+constexpr uint32_t kWifiRetryMs     = 15000;
 constexpr uint8_t  kWifiAttempts    = 3;      // 이만큼 실패해야 설정 포털로 간다
 constexpr uint32_t kLongPressMs     = 700;
 constexpr uint32_t kVeryLongPressMs = 2000;
@@ -323,6 +326,10 @@ static void powerOff() {
     codec.setMute(true);
     hwSpeakerAmp(false);
 
+    // 공유기에 인사를 하고 내려간다. 그냥 사라지면 공유기가 한동안 예전 세션을
+    // 붙들고 있어서, 다시 켰을 때 4-way 핸드셰이크가 막히는 일이 있다.
+    WiFi.disconnect(true);
+
     lockShared();
     rtcStationIndex = shared.index;
     rtcVolume = shared.volume;
@@ -341,8 +348,23 @@ static uint32_t lastUiMs = 0;
 // 한 번 실패했다고 바로 설정 포털로 가지 않는다. 정전 후 복구처럼 공유기가
 // 아직 안 올라왔거나 첫 인증이 어긋나는 일이 있는데, 그 상태는 기다린다고
 // 풀리지 않는다. 접속을 처음부터 다시 걸어야 한다.
+// 접속이 왜 안 되는지는 이 이벤트의 reason 코드에 다 들어 있다. 2=AUTH_EXPIRE,
+// 15=4WAY_HANDSHAKE_TIMEOUT(암호가 틀렸거나 공유기가 예전 세션을 붙들고 있다),
+// 201=NO_AP_FOUND, 205=CONNECTION_FAIL.
+static void onWifiEvent(arduino_event_id_t id, arduino_event_info_t info) {
+    if (id == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        RLOGI("Wi-Fi 끊김 (reason=%u)", (unsigned)info.wifi_sta_disconnected.reason);
+    }
+}
+
 static bool connectWifi() {
     const WifiCreds c = wifiLoadCreds();
+
+    static bool hooked = false;
+    if (!hooked) {
+        hooked = true;
+        WiFi.onEvent(onWifiEvent);
+    }
 
     for (uint8_t attempt = 1; attempt <= kWifiAttempts; attempt++) {
         RLOGI("Wi-Fi 접속 시도 %u/%u: %s", (unsigned)attempt, (unsigned)kWifiAttempts,
@@ -357,8 +379,9 @@ static bool connectWifi() {
         WiFi.setAutoReconnect(true);
         WiFi.begin(c.ssid.c_str(), c.pass.c_str());
 
+        const uint32_t waitMs = (attempt == 1) ? kWifiFirstTryMs : kWifiRetryMs;
         const uint32_t t0 = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - t0 < kWifiTimeoutMs) {
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < waitMs) {
             M5.update();   // setup 을 통째로 막지 않는다
             delay(100);
         }

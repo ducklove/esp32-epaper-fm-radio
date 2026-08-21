@@ -53,6 +53,7 @@ constexpr uint8_t  kDefaultIndex  = 2;      // KBS Classic FM 93.1
 constexpr uint32_t kWifiFirstTryMs = 25000;
 constexpr uint32_t kWifiRetryMs    = 15000;
 constexpr uint8_t  kWifiAttempts   = 3;  // 이만큼 실패해야 설정 포털로 간다
+constexpr uint32_t kWifiRecoveryMs = 30000;  // 붙지 못한 채 부팅했을 때 재시도 간격
 constexpr uint32_t kLongPressMs     = 700;
 constexpr uint32_t kVeryLongPressMs = 2000;  // PWR 을 이만큼 누르면 전원 끔
 // 표시할 내용이 바뀌지 않으면 다시 그리지 않는다.
@@ -602,7 +603,10 @@ static void onWifiEvent(arduino_event_id_t id, arduino_event_info_t info) {
     }
 }
 
-static bool connectWifi() {
+// 접속하지 못한 채로 부팅했는지. loop() 에서 계속 다시 붙어 본다.
+static bool wifiRecovery = false;
+
+static bool connectWifi(uint8_t attempts) {
     const WifiCreds c = wifiLoadCreds();
 
     static bool hooked = false;
@@ -611,8 +615,8 @@ static bool connectWifi() {
         WiFi.onEvent(onWifiEvent);
     }
 
-    for (uint8_t attempt = 1; attempt <= kWifiAttempts; attempt++) {
-        RLOGI("Wi-Fi 접속 시도 %u/%u: %s", (unsigned)attempt, (unsigned)kWifiAttempts,
+    for (uint8_t attempt = 1; attempt <= attempts; attempt++) {
+        RLOGI("Wi-Fi 접속 시도 %u/%u: %s", (unsigned)attempt, (unsigned)attempts,
               c.ssid.c_str());
         if (attempt > 1) {
             WiFi.disconnect(true);  // 이전 시도의 찌꺼기를 지운다
@@ -624,7 +628,7 @@ static bool connectWifi() {
         WiFi.setAutoReconnect(true);
         WiFi.begin(c.ssid.c_str(), c.pass.c_str());
 
-        const uint32_t waitMs = (attempt == 1) ? kWifiFirstTryMs : kWifiRetryMs;
+        const uint32_t waitMs = (attempts > 1 && attempt == 1) ? kWifiFirstTryMs : kWifiRetryMs;
         const uint32_t t0 = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - t0 < waitMs) {
             delay(250);
@@ -844,9 +848,10 @@ void setup() {
     lastUi = snapshotUi();
     uiRender(lastUi);
 
-    if (!connectWifi()) {
+    if (!connectWifi(kWifiAttempts)) {
         // 접속에 실패하면 설정 포털을 띄운다. 저장되면 재시작해서 다시 붙는다.
         runWifiPortal();
+        wifiRecovery = true;
         return;  // 포털이 끝났는데도 못 붙었으면 loop() 에서 계속 재시도
     }
     RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
@@ -1157,8 +1162,22 @@ static void enterDeepSleepFromClock() {
 }
 
 void loop() {
-    // Wi-Fi 가 끊긴 채로 부팅했으면 계속 재시도
-    if (WiFi.status() != WL_CONNECTED) {
+    // 붙지 못한 채로 부팅했고 설정 포털도 소용없었던 경우. 여기서 계속 다시
+    // 붙어 본다. 공유기가 늦게 올라오는 일이 있는데, 그냥 포기해 버리면
+    // 사용자가 직접 껐다 켜야 한다. 붙으면 재시작해서 setup 을 처음부터 다시
+    // 탄다 — 오디오 태스크가 그때 만들어지므로 이어서 하기보다 이 편이 낫다.
+    if (wifiRecovery) {
+        static uint32_t lastTry = 0;
+        if (millis() - lastTry > kWifiRecoveryMs) {
+            lastTry = millis();
+            if (connectWifi(1)) {
+                RLOGI("Wi-Fi 복구됨 — 재시작");
+                delay(200);
+                ESP.restart();
+            }
+        }
+    } else if (WiFi.status() != WL_CONNECTED) {
+        // 붙었다가 끊긴 경우. 드라이버에 설정이 남아 있으므로 이쪽이면 된다.
         static uint32_t lastRetry = 0;
         if (millis() - lastRetry > 10000) {
             lastRetry = millis();

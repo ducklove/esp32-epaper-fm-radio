@@ -84,6 +84,18 @@ UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s);
 // 드래그 중이면 상태가 안 바뀌어도 다시 그려야 한다.
 bool uiNeedsRedraw();
 
+// 터치는 별도 태스크에서, 그리기는 loop 에서 돈다. 둘 다 이 잠금 안에서.
+void uiLock();
+void uiUnlock();
+
+// 마지막 상태 로그 이후의 렌더 시간(ms). 그리기와 SPI 전송을 따로 잰다.
+struct UiTiming {
+    uint16_t frames = 0;
+    uint16_t drawAvg = 0, drawMax = 0;
+    uint16_t flushAvg = 0, flushMax = 0;
+};
+UiTiming uiTakeTiming();
+
 // 백라이트. 조작이 없으면 어두워지고 그 뒤 꺼진다.
 void uiWake();
 void uiTickBacklight();

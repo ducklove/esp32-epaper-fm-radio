@@ -67,7 +67,18 @@ constexpr Rect R_POWER{324, 244, 148, 62};
 
 // ── 화면 객체 ─────────────────────────────────────────────────────
 // 깜빡임 없이 그리려고 PSRAM 캔버스(480x320x2 = 300KB)에 그린 뒤 통째로
-// 밀어 넣는다. SPI 80MHz 에서 한 장에 40ms 남짓이다.
+// 밀어 넣는다.
+//
+// 버스는 Arduino_ESP32SPIDMA 다. 벤더 예제의 Arduino_HWSPI(Arduino SPI 객체
+// 경유)는 P4 에서 한 장에 2.5초가 걸렸다 — 그리기 7ms, 전송 2,500ms. 청크를
+// 32픽셀에서 4096픽셀로 키워도 그대로라 Arduino SPI HAL 자체가 P4 에서 느린
+// 것이다. IDF spi_master + DMA 를 직접 쓰는 이 버스로 바꿔서 잰 값은 상태
+// 로그(화면 N장 그리기/전송)에 찍힌다.
+//
+// spi_num 은 P4 에서 "호스트 번호 + 1" 이다(라이브러리가 C3/S3 만 그대로 쓰고
+// 나머지는 1 을 뺀다). SPI2_HOST(=1)를 쓰려면 2 를 넘긴다. 기본값 FSPI(=0)를
+// 그대로 두면 호스트 -1 이 되어 초기화가 죽는다 — 벤더가 이 버스를 피한
+// 이유가 이것일 것이다.
 Arduino_DataBus* bus = nullptr;
 Arduino_GFX*     panel = nullptr;
 Arduino_Canvas*  gfx = nullptr;
@@ -93,6 +104,10 @@ bool    dirty = false;
 uint32_t lastWakeMs = 0;
 bool     screenOn = true;
 uint8_t  curBright = SCREEN_BRIGHT;
+
+// ── 잠금 / 시간 통계 ──────────────────────────────────────────────
+SemaphoreHandle_t uiMutex = nullptr;
+uint32_t tDrawSum = 0, tDrawMax = 0, tFlushSum = 0, tFlushMax = 0, tFrames = 0;
 
 // ── 도우미 ────────────────────────────────────────────────────────
 int16_t freqToX(float f) {
@@ -311,10 +326,29 @@ void renderMenu(const UiState& s) {
 }  // namespace
 
 // ── 공개 ──────────────────────────────────────────────────────────
+void uiLock()   { if (uiMutex) xSemaphoreTake(uiMutex, portMAX_DELAY); }
+void uiUnlock() { if (uiMutex) xSemaphoreGive(uiMutex); }
+
+UiTiming uiTakeTiming() {
+    UiTiming t;
+    uiLock();
+    t.frames = (uint16_t)tFrames;
+    if (tFrames) {
+        t.drawAvg = (uint16_t)(tDrawSum / tFrames);
+        t.flushAvg = (uint16_t)(tFlushSum / tFrames);
+    }
+    t.drawMax = (uint16_t)tDrawMax;
+    t.flushMax = (uint16_t)tFlushMax;
+    tDrawSum = tDrawMax = tFlushSum = tFlushMax = tFrames = 0;
+    uiUnlock();
+    return t;
+}
+
 void uiBegin() {
+    uiMutex = xSemaphoreCreateMutex();
     hwBacklight(0);
-    bus = new Arduino_HWSPI(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK, PIN_LCD_MOSI, GFX_NOT_DEFINED,
-                            &SPI, false);
+    bus = new Arduino_ESP32SPIDMA(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK, PIN_LCD_MOSI,
+                                  GFX_NOT_DEFINED, 2 /* SPI2_HOST + 1 */, false);
     panel = new Arduino_ST7796(bus, PIN_LCD_RST, LCD_ROTATION, true /* IPS */, 320, 480);
     gfx = new Arduino_Canvas(W, H, panel);
     gfx->begin(LCD_SPI_HZ);
@@ -329,11 +363,21 @@ void uiBegin() {
 
 void uiRender(const UiState& s) {
     if (!gfx) return;
+    uiLock();
     dirty = false;
+    const uint32_t t0 = millis();
     gfx->fillScreen(COL_BG);
     if (page == Page::MENU) renderMenu(s);
     else                    renderRadio(s);
+    const uint32_t t1 = millis();
     gfx->flush();
+    const uint32_t t2 = millis();
+
+    const uint32_t d = t1 - t0, f = t2 - t1;
+    tDrawSum += d;  if (d > tDrawMax) tDrawMax = d;
+    tFlushSum += f; if (f > tFlushMax) tFlushMax = f;
+    tFrames++;
+    uiUnlock();
 }
 
 void uiRenderWifiSetup(const UiState& s) {
@@ -359,6 +403,9 @@ bool uiNeedsRedraw() { return dirty; }
 UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s) {
     UiEvent ev;
     const bool down = n > 0;
+    // 아무것도 안 눌려 있고 직전에도 아니었으면 할 일이 없다. 잠금도 잡지 않는다.
+    if (!down && !touchWas) return ev;
+    uiLock();
 
     if (down) {
         lastX = pts[0].x;
@@ -468,6 +515,7 @@ UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s) {
     }
 
     touchWas = down;
+    uiUnlock();
     return ev;
 }
 

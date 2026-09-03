@@ -44,6 +44,7 @@ constexpr uint32_t kWifiRecoveryMs  = 30000;
 constexpr uint32_t kStatusPeriodMs  = 60000;
 constexpr uint32_t kUiPeriodMs      = 1000;
 constexpr uint32_t kTouchPeriodMs   = 20;     // 50Hz 폴링
+constexpr uint32_t kDragFrameMs     = 50;     // 끄는 동안 다시 그리는 간격 (20fps)
 constexpr uint32_t kRetryDelayMs    = 8000;
 constexpr uint32_t kWifiPortalMs    = 5UL * 60 * 1000;
 
@@ -67,6 +68,7 @@ static Shared            shared;
 static SemaphoreHandle_t sharedLock;
 
 static QueueHandle_t cmdQueue;
+static QueueHandle_t uiEventQueue;   // 터치 태스크 -> loop
 struct Cmd {
     enum Kind : uint8_t { TUNE, PAUSE, RESUME } kind;
     uint8_t index;
@@ -312,11 +314,28 @@ static void pollSlowStatus() {
 
     const uint32_t bufSize = audio.getInBufferSize();
     const uint32_t bufPct = bufSize ? (audio.inBufferFilled() * 100 / bufSize) : 0;
-    RLOGI("배터리 %u%% (%.2fV%s%s%s)  VBUS %.2fV  Wi-Fi %ddBm  버퍼 %u%%  힙 %u  가동 %lu분",
+    const UiTiming ut = uiTakeTiming();
+    RLOGI("배터리 %u%% (%.2fV%s%s%s)  VBUS %.2fV  Wi-Fi %ddBm  버퍼 %u%%  힙 %u  가동 %lu분  "
+          "화면 %u장 그리기 %u/%ums 전송 %u/%ums",
           (unsigned)pw.percent, pw.battMv / 1000.0f, pw.battery ? "" : ", 셀 없음",
           pw.charging ? ", 충전중" : "", pw.vbus ? ", USB" : "", pw.vbusMv / 1000.0f,
           (int)rssi, (unsigned)bufPct, (unsigned)ESP.getFreeHeap(),
-          (unsigned long)(millis() / 60000));
+          (unsigned long)(millis() / 60000), (unsigned)ut.frames, (unsigned)ut.drawAvg,
+          (unsigned)ut.drawMax, (unsigned)ut.flushAvg, (unsigned)ut.flushMax);
+}
+
+// ── 터치 태스크 ───────────────────────────────────────────────────
+// 화면 한 장을 SPI 로 밀어 넣는 동안 loop 는 멈춘다. 그 사이에 들어온 탭을
+// 놓치지 않으려면 터치는 따로 돌아야 한다. 결과(UiEvent)는 큐로 loop 에 넘긴다.
+static void touchTask(void*) {
+    TouchPoint pts[2];
+    for (;;) {
+        const uint8_t n = touchRead(pts, 2);
+        const UiState s = snapshotUi();
+        const UiEvent ev = uiHandleTouch(pts, n, s);
+        if (ev.action != UiAction::NONE) xQueueSend(uiEventQueue, &ev, 0);
+        vTaskDelay(pdMS_TO_TICKS(kTouchPeriodMs));
+    }
 }
 
 // ── 전원 끄기 ─────────────────────────────────────────────────────
@@ -529,6 +548,7 @@ void setup() {
 
     sharedLock = xSemaphoreCreateMutex();
     cmdQueue = xQueueCreate(4, sizeof(Cmd));
+    uiEventQueue = xQueueCreate(8, sizeof(UiEvent));
     loadPrefs();
 
     hwPmicBegin();
@@ -536,6 +556,9 @@ void setup() {
     uiBegin();
     pollSlowStatus();
     uiRender(snapshotUi());
+
+    // 터치는 지금부터 받는다. Wi-Fi 를 기다리는 동안에도 화면은 깨어난다.
+    xTaskCreatePinnedToCore(touchTask, "touch", 4096, nullptr, 2, nullptr, 0);
 
     setState(ST_WIFI);
     uiRender(snapshotUi());
@@ -675,19 +698,15 @@ void loop() {
         }
     }
 
-    // ── 터치 ─────────────────────────────────────────────────────
-    static uint32_t lastTouchMs = 0;
-    if (millis() - lastTouchMs >= kTouchPeriodMs) {
-        lastTouchMs = millis();
-        TouchPoint pts[2];
-        const uint8_t n = touchRead(pts, 2);
-        const UiState s = snapshotUi();
-        const UiEvent ev = uiHandleTouch(pts, n, s);
-        handleUiEvent(ev);
-        if (uiNeedsRedraw() && uiScreenIsOn()) {
-            uiRender(snapshotUi());
-            lastUiMs = millis();
-        }
+    // ── 터치 이벤트 (터치 태스크가 보낸 것) ──────────────────────
+    UiEvent ev;
+    while (xQueueReceive(uiEventQueue, &ev, 0) == pdTRUE) handleUiEvent(ev);
+
+    // 끌고 있으면 바늘·슬라이더가 손을 따라가야 한다. 다만 폴링마다가 아니라
+    // 20fps 로 — 한 장 전송이 끝나기 전에 다음 장을 그릴 이유가 없다.
+    if (uiNeedsRedraw() && uiScreenIsOn() && millis() - lastUiMs >= kDragFrameMs) {
+        uiRender(snapshotUi());
+        lastUiMs = millis();
     }
     uiTickBacklight();
 

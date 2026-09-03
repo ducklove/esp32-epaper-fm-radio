@@ -14,19 +14,27 @@ constexpr uint8_t kMaxPoints = 2;   // FT6336 은 2점
 
 bool present = false;
 
-// 패널 좌표(세로 320x480, 벤더 회전 4 기준) -> 눕힌 화면 좌표.
-// LCD_ROTATION 5 와 7 은 서로 180도라 변환도 반대다.
+// 패널 좌표 -> 눕힌 화면 좌표.
+//
+// 컨트롤러는 벤더의 세로 화면(회전 4, 320x480) 좌표를 준다. 회전 1 에서의
+// 변환은 실물로 맞췄다 — 처음 (479-py, 319-px) 로 잡았더니 좌우가 반대였고,
+// 로그의 원시 좌표로 보니 x 는 py 그대로가 맞았다. 회전 3 은 그 180도 반대.
 void mapToScreen(uint16_t px, uint16_t py, int16_t& sx, int16_t& sy) {
     if (px > 319) px = 319;
     if (py > 479) py = 479;
-    if (LCD_ROTATION == 5) {
+    if (LCD_ROTATION == 1) {
         sx = (int16_t)py;
         sy = (int16_t)(319 - px);
-    } else {
+    } else {  // 3
         sx = (int16_t)(479 - py);
         sy = (int16_t)px;
     }
+    if (TOUCH_FLIP_X) sx = (int16_t)(LCD_W - 1 - sx);
+    if (TOUCH_FLIP_Y) sy = (int16_t)(LCD_H - 1 - sy);
 }
+
+// 누르기 시작할 때 한 번만 찍는다. 좌표 변환이 맞는지 보드 없이도 알 수 있다.
+bool wasDown = false;
 
 }  // namespace
 
@@ -58,6 +66,11 @@ uint8_t touchRead(TouchPoint* out, uint8_t max) {
         const uint16_t px = (uint16_t)(((p[0] & 0x0F) << 8) | p[1]);
         const uint16_t py = (uint16_t)(((p[2] & 0x0F) << 8) | p[3]);
         mapToScreen(px, py, out[i].x, out[i].y);
+        if (i == 0 && !wasDown) {
+            RLOGI("터치 raw=(%u,%u) -> 화면=(%d,%d)", (unsigned)px, (unsigned)py,
+                  (int)out[i].x, (int)out[i].y);
+        }
     }
+    wasDown = (n > 0);
     return n;
 }

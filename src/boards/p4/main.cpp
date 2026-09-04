@@ -41,6 +41,7 @@ constexpr uint32_t kWifiFirstTryMs  = 25000;
 constexpr uint32_t kWifiRetryMs     = 15000;
 constexpr uint8_t  kWifiAttempts    = 3;
 constexpr uint32_t kWifiRecoveryMs  = 30000;
+constexpr uint32_t kWifiLostRestartMs = 45000;  // 끊긴 채 이만큼 지나면 재시작
 constexpr uint32_t kStatusPeriodMs  = 60000;
 constexpr uint32_t kUiPeriodMs      = 1000;
 constexpr uint32_t kTouchPeriodMs   = 20;     // 50Hz 폴링
@@ -237,12 +238,37 @@ static void audioTask(void*) {
             }
         }
 
+        // 라이브러리 4.0 은 connecttohost() 가 바로 true 를 돌려주고 실제 접속은
+        // loop() 안에서 한다. 거기서 실패하면(DNS, TLS, 소켓) 로그만 남기고 멈춘다
+        // — 상태는 BUFFERING 인 채로. ERROR 에서만 재시도하던 상태 머신은 그
+        // 자리에서 영원히 기다렸다(P4 에서 국악FM DNS 실패로 6분간 무반응).
+        // 버퍼링이 이만큼 지나도 재생이 시작되지 않으면 오류로 쳐서 다시 붙는다.
+        // 재생 중 끊겨 BUFFERING 으로 돌아간 경우도 같은 길을 탄다.
+        constexpr uint32_t kStallMs = 45000;
+        static uint32_t bufferingSince = 0;
+        bool stalled = false;
+
         lockShared();
         if (shared.state == ST_BUFFERING && audio.isRunning()) shared.state = ST_PLAYING;
         else if (shared.state == ST_PLAYING && !audio.isRunning()) shared.state = ST_BUFFERING;
+        if (shared.state == ST_BUFFERING) {
+            if (!bufferingSince) bufferingSince = millis();
+            else if (millis() - bufferingSince > kStallMs) {
+                shared.state = ST_ERROR;
+                shared.detail = "STREAM STALL";
+                bufferingSince = 0;
+                stalled = true;
+            }
+        } else {
+            bufferingSince = 0;
+        }
         const PlayState st = shared.state;
         const uint8_t   idx = shared.index;
         unlockShared();
+        if (stalled) {
+            RLOGE("스트림이 %lu초 넘게 시작되지 않음 — 다시 붙는다",
+                  (unsigned long)(kStallMs / 1000));
+        }
 
         if (st == ST_ERROR && WiFi.status() == WL_CONNECTED) {
             if (millis() - lastRetryMs > kRetryDelayMs) {
@@ -315,11 +341,13 @@ static void pollSlowStatus() {
     const uint32_t bufSize = audio.getInBufferSize();
     const uint32_t bufPct = bufSize ? (audio.inBufferFilled() * 100 / bufSize) : 0;
     const UiTiming ut = uiTakeTiming();
-    RLOGI("배터리 %u%% (%.2fV%s%s%s)  VBUS %.2fV  Wi-Fi %ddBm  버퍼 %u%%  힙 %u  가동 %lu분  "
+    // 버퍼는 퍼센트와 함께 크기도 적는다. PSRAM 이 크면 라이브러리가 버퍼를 크게
+    // 잡아서, 같은 몇 초치가 S3 보드보다 작은 퍼센트로 보인다.
+    RLOGI("배터리 %u%% (%.2fV%s%s%s)  VBUS %.2fV  Wi-Fi %ddBm  버퍼 %u%%/%uKB  힙 %u  가동 %lu분  "
           "화면 %u장 그리기 %u/%ums 전송 %u/%ums",
           (unsigned)pw.percent, pw.battMv / 1000.0f, pw.battery ? "" : ", 셀 없음",
           pw.charging ? ", 충전중" : "", pw.vbus ? ", USB" : "", pw.vbusMv / 1000.0f,
-          (int)rssi, (unsigned)bufPct, (unsigned)ESP.getFreeHeap(),
+          (int)rssi, (unsigned)bufPct, (unsigned)(bufSize / 1024), (unsigned)ESP.getFreeHeap(),
           (unsigned long)(millis() / 60000), (unsigned)ut.frames, (unsigned)ut.drawAvg,
           (unsigned)ut.drawMax, (unsigned)ut.flushAvg, (unsigned)ut.flushMax);
 }
@@ -682,6 +710,7 @@ static void handleUiEvent(const UiEvent& ev) {
 
 void loop() {
     static uint32_t lastRetry = 0;
+    static uint32_t wifiDownSince = 0;   // 끊김을 처음 본 시각. 붙어 있으면 0
     if (wifiRecovery) {
         if (millis() - lastRetry > kWifiRecoveryMs) {
             lastRetry = millis();
@@ -692,10 +721,36 @@ void loop() {
             }
         }
     } else if (WiFi.status() != WL_CONNECTED) {
-        if (millis() - lastRetry > 10000) {
-            lastRetry = millis();
-            WiFi.reconnect();
+        // 붙었다가 끊긴 경우. 처음에는 여기서 10초마다 WiFi.reconnect() 를 불렀는데,
+        // 구형 C6 펌웨어는 그 안의 Req_WifiDisconnect RPC 에 답하지 않아 호출이
+        // 10초씩 통째로 막혔다. 다시 붙지도 않으면서 loop 만 세워 두니 화면이
+        // 10초에 한 번 갱신되고 터치도 그때만 처리됐다 — 14시간 뒤 "잠에서 안
+        // 깨어난다"로 보였던 것이 이것이다.
+        //
+        // 이 슬레이브에서 믿을 수 있는 복구는 부팅 경로(C6 리셋 + 10초 대기)뿐이다.
+        // 끊긴 채 kWifiLostRestartMs 가 지나면 재시작한다. 설정은 NVS 에 있다.
+        if (!wifiDownSince) {
+            wifiDownSince = millis();
+            RLOGE("Wi-Fi 끊김 감지 — %lu초 안에 안 돌아오면 재시작",
+                  (unsigned long)(kWifiLostRestartMs / 1000));
+            if (audioTaskHandle) {
+                lockShared();
+                const bool paused = shared.paused;
+                unlockShared();
+                if (!paused) setState(ST_ERROR, "WIFI LOST");
+            }
+            uiWake();
+        } else if (millis() - wifiDownSince > kWifiLostRestartMs) {
+            RLOGE("Wi-Fi 가 돌아오지 않는다 — 재시작");
+            setState(ST_ERROR, "WIFI LOST - RESTART");
+            uiRender(snapshotUi());
+            savePrefs();
+            Serial.flush();
+            delay(300);
+            ESP.restart();
         }
+    } else {
+        wifiDownSince = 0;
     }
 
     // ── 터치 이벤트 (터치 태스크가 보낸 것) ──────────────────────

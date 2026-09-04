@@ -245,13 +245,13 @@
 
 <header class="masthead">
   <div class="masthead-inner">
-    <p class="eyebrow">Waveshare ESP32-S3-ePaper-1.54 · M5Stack M5StickS3 · 펌웨어 문서</p>
+    <p class="eyebrow">Waveshare ESP32-S3-ePaper-1.54 · M5Stack M5StickS3 · Waveshare ESP32-P4 · 펌웨어 문서</p>
     <h1>93.1 ePaper Radio</h1>
     <p class="standfirst">
       FM 튜너가 없는 보드로 만든 FM 라디오. 방송사 스트림을 Wi-Fi 로 받아
       온보드 스피커로 내보내고, 200×200 전자종이에는 실제 서울 FM 주파수를 쓴
-      아날로그 다이얼을 그린다. 같은 펌웨어를 M5StickS3 에도 올린다.
-      사용법 · 프로그램 구조 · 기술 사양.
+      아날로그 다이얼을 그린다. 같은 펌웨어를 M5StickS3 과 터치 LCD 가 달린
+      ESP32-P4 보드에도 올린다. 사용법 · 프로그램 구조 · 기술 사양.
     </p>
 
     <div class="dial">
@@ -319,6 +319,7 @@
       <li><a href="#channels">채널</a></li>
       <li><a href="#wifi">Wi-Fi 설정</a></li>
       <li><a href="#sticks3">다른 보드: M5StickS3</a></li>
+      <li><a href="#p4">다른 보드: ESP32-P4 터치</a></li>
       <li><a href="#arch">프로그램 구조</a></li>
       <li><a href="#spec">기술 사양</a></li>
       <li><a href="#traps">겪은 함정</a></li>
@@ -761,6 +762,114 @@
     </section>
 
     <!-- ─────────────────────────────────────────────────────────── -->
+    <section id="p4">
+      <h2>다른 보드: ESP32-P4 터치</h2>
+      <p class="lede">
+        세 번째 보드는 Waveshare <strong>ESP32-P4-WIFI6-Touch-LCD-3.5</strong>.
+        칩이 다르고(RISC-V, 32MB PSRAM), 무선이 칩 안에 없으며, 버튼이 없다.
+        화면이 곧 조작면이다.
+      </p>
+
+      <div class="grid">
+        <div class="card">
+          <p class="k">화면</p>
+          <p class="v">480×320</p>
+          <p class="n">ST7796 SPI 80MHz · FT6336 정전식 터치</p>
+        </div>
+        <div class="card">
+          <p class="k">무선</p>
+          <p class="v">ESP32-C6</p>
+          <p class="n">P4 에는 라디오가 없다. 옆의 C6 가 SDIO 로 대신한다</p>
+        </div>
+        <div class="card">
+          <p class="k">한 장 전송</p>
+          <p class="v">37 ms</p>
+          <p class="n">DMA 버스. Arduino SPI 경유는 2,500 ms 였다</p>
+        </div>
+      </div>
+
+      <h3>조작</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>라디오 페이지</caption>
+          <thead><tr><th>동작</th><th>결과</th></tr></thead>
+          <tbody>
+            <tr><td>다이얼을 누르거나 끌기</td><td>선국. 놓으면 가장 가까운 채널로 간다</td></tr>
+            <tr><td>볼륨 슬라이더 끌기</td><td>볼륨 — 끄는 동안 바로 반영</td></tr>
+            <tr><td class="pin">&lt;&lt; &nbsp; || &nbsp; &gt;&gt;</td><td>이전 · 일시정지/재개 · 다음</td></tr>
+            <tr><td class="pin">MENU</td><td>채널 격자 페이지</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <caption>메뉴 페이지</caption>
+          <thead><tr><th>동작</th><th>결과</th></tr></thead>
+          <tbody>
+            <tr><td>채널 15개 격자</td><td>누르면 그 채널로</td></tr>
+            <tr><td class="pin">WI-FI</td><td>Wi-Fi 설정 포털</td></tr>
+            <tr><td class="pin">SCREEN OFF</td><td>화면 끄기. 어디든 건드리면 켜진다</td></tr>
+            <tr><td class="pin">POWER OFF</td><td>전원 끔 — AXP2101 이 진짜로 끊는다. PWR 버튼으로 켠다</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        조작이 없으면 30초 뒤 어두워지고 3분 뒤 꺼진다. 꺼진 화면을 건드린 첫
+        터치는 켜기로만 친다.
+      </p>
+
+      <h3>무선은 옆 칩이 한다</h3>
+      <p>
+        ESP32-P4 에는 Wi-Fi 가 없다. 보드에 같이 실린 ESP32-C6 가 SDIO 로 붙어
+        무선을 대신한다(ESP-Hosted). Arduino 3.3 이 이 구조를 감춰 주어
+        <code>WiFi.begin()</code> 은 그대로 쓰지만, 호스트(P4 라이브러리)와
+        슬레이브(C6 펌웨어)의 버전이 맞아야 한다.
+      </p>
+      <div class="note">
+        <p class="t">공장 출하 C6 펌웨어가 오래됐다</p>
+        <p>
+          호스트 2.12.11 의 버전 질의에 답하지 않고(0.0.0), 초기화 직후에
+          <code>WiFi.begin()</code> 을 부르면 25초를 기다려도 붙지 않는다. 그런데
+          <strong>10초쯤 뒤에 부르면 바로 붙는다.</strong> C6 갱신을 시도하느라
+          우연히 늦어진 부팅에서 발견했다. 버전을 말해 주지 않는 슬레이브면
+          10초를 기다렸다가 접속한다.
+        </p>
+        <p>
+          Arduino 코어에 같은 버전의 C6 펌웨어가 들어 있어 P4 펌웨어에 함께 굽고,
+          버전이 다르면 SDIO 로 밀어 넣는 갱신 경로를 넣었다. 이 개체의 슬레이브는
+          OTA RPC 자체를 몰라 실패하지만 두 번까지만 시도하고 건너뛴다. 답하지
+          않는 RPC 하나가 호출한 쪽을 10초 세우기 때문에, 붙었다가 끊긴 뒤의
+          <code>WiFi.reconnect()</code> 도 쓰지 않는다 — 45초 뒤 재시작한다.
+        </p>
+      </div>
+
+      <h3>핀맵</h3>
+      <div class="tablewrap">
+        <table>
+          <caption>벤더 Arduino 보드 계층(Waveshare_LCD35) 기준 · 이 개체의 칩은 rev v1.3</caption>
+          <thead><tr><th>블록</th><th>핀</th><th>비고</th></tr></thead>
+          <tbody>
+            <tr><td>LCD ST7796</td><td class="pin">MOSI 20 · SCK 21 · CS 23 · DC 26 · RST 27 · BL 28</td><td>SPI 80MHz · 회전 1</td></tr>
+            <tr><td>내부 I2C</td><td class="pin">SDA 7 · SCL 8</td><td>코덱 0x18 · 터치 0x38 · PMIC 0x34</td></tr>
+            <tr><td>ES8311 I2S</td><td class="pin">MCLK 13 · BCLK 12 · WS 10 · DOUT 9 · DIN 11</td><td>—</td></tr>
+            <tr><td>스피커 앰프</td><td class="pin">53</td><td>HIGH = 켜짐</td></tr>
+            <tr><td>SDIO → C6</td><td class="pin">CLK 18 · CMD 19 · D0~D3 14~17 · RST 54</td><td>Arduino 기본값과 같다</td></tr>
+            <tr><td>콘솔</td><td class="pin">UART0 37/38</td><td class="hot">USB TO UART 포트(CH343). OTG 쪽은 안 잡힌다</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>확인된 동작</h3>
+      <pre><code>[I] AXP2101 chip id 0x4A
+[I] 구형 C6 펌웨어 — 10056 ms 기다린 뒤 접속
+[I] Wi-Fi 접속됨: 192.168.68.79
+[I] ES8311 발견: 0x18
+[I] 선국: KBS Classic FM (93.1 MHz)
+[A/bitrate (b/s)] 201981
+[I] ... 화면 55장 그리기 6/6ms 전송 37/37ms</code></pre>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
     <section id="arch">
       <h2>프로그램 구조</h2>
 
@@ -948,7 +1057,10 @@
     sticks3/              M5Stack M5StickS3
       main.cpp  config.h  ui.h/.cpp
       hw.h/.cpp           PMIC — 앰프 enable 과 배터리 전압
-tools/                    사진을 photo.h 로 바꾸는 스크립트</code></pre>
+    p4/                   Waveshare ESP32-P4-WIFI6-Touch-LCD-3.5
+      main.cpp  config.h  ui.h/.cpp  touch.h/.cpp  hw.h/.cpp
+      c6update.h/.cpp  c6fw.S   C6 코프로세서 펌웨어 갱신
+tools/                    사진 변환 스크립트, P4 의 C6 펌웨어 경로 생성</code></pre>
       <div class="note">
         <p class="t">코덱 드라이버는 I2C 전송을 밖에서 받는다</p>
         <p>
@@ -1041,6 +1153,7 @@ cp src/common/secrets.h.example src/common/secrets.h   # Wi-Fi 초기값
 
 pio run -e epaper  -t upload             # ePaper 판, USB
 pio run -e sticks3 -t upload             # M5StickS3, USB
+pio run -e p4      -t upload             # ESP32-P4, USB (UART 포트)
 pio run -e epaper-ota -t upload          # ePaper 판, 무선</code></pre>
       <p>
         pioarduino 플랫폼(Arduino 3.3.11 / ESP-IDF 5.5)을 쓴다.
@@ -1060,6 +1173,29 @@ pio run -e epaper-ota -t upload          # ePaper 판, 무선</code></pre>
       <p>
         같은 보드로 작업할 때 다시 밟기 쉬운 것들. 대부분 증상이 원인과 멀리
         떨어진 곳에서 나타났다.
+      </p>
+
+      <h3>P4 의 Arduino SPI 는 화면에 못 쓴다</h3>
+      <p>
+        벤더 예제대로 <code>Arduino_HWSPI</code> 를 쓰니 480×320 한 장에
+        <strong>2.5초</strong>가 걸렸다. 청크를 128배 키워도 그대로라 Arduino SPI
+        HAL 자체가 병목이다. IDF 드라이버와 DMA 를 직접 쓰는
+        <code>Arduino_ESP32SPIDMA</code> 로 37ms. 다만 이 버스는 P4 에서 버스
+        번호를 "호스트 + 1" 로 넘겨야 하고, 기본값이면 초기화가 죽는다.
+      </p>
+      <p>
+        재기 전에는 "터치가 느리다"로 보였다. 렌더 시간을 그리기와 전송으로 나눠
+        로그에 찍은 뒤에야 그리기 7ms · 전송 2,500ms 로 갈렸다.
+      </p>
+
+      <h3>구형 ESP-Hosted 슬레이브는 RPC 가 막힌다</h3>
+      <p>
+        답하지 않는 RPC 하나가 호출한 쪽을 10초 세운다. 붙었다가 끊긴 뒤
+        <code>WiFi.reconnect()</code> 를 10초마다 부르던 loop 가 사실상 항상
+        막혀서, 화면이 10초에 한 번 갱신되고 터치도 그때만 처리됐다. 14시간 뒤
+        <em>"잠에서 안 깨어난다"</em> 로 보였다. 터치 태스크는 따로 돌아서 로그에는
+        찍히고 있었다 — 그게 단서였다. 그 슬레이브에서 믿을 수 있는 복구는
+        재시작뿐이다.
       </p>
 
       <h3 id="trap-i2c">한 I2C 포트에 마스터 드라이버를 둘 올릴 수 없다</h3>

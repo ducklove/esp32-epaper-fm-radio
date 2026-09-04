@@ -43,7 +43,15 @@ HwPower hwReadPower() {
     HwPower p;
     if (!pmuOk) return p;
     p.pmic = true;
-    p.battery = pmu.isBatteryConnect();
+
+    // 셀이 붙어 있는데도 가끔 "없음"으로 읽힌다(실제로 1분 상태 로그에 한 번
+    // 찍혔다). 한 번 어긋난 값으로 화면이 NO BAT 로 깜빡이지 않게, 두 번
+    // 연속으로 없다고 해야 없는 것으로 친다.
+    static uint8_t absentStreak = 0;
+    const bool present = pmu.isBatteryConnect();
+    if (present) absentStreak = 0;
+    else if (absentStreak < 2) absentStreak++;
+    p.battery = present || absentStreak < 2;
     p.vbus = pmu.isVbusIn();
     p.charging = pmu.isCharging();
     p.battMv = pmu.getBattVoltage();

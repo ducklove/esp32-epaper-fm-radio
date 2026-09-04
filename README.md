@@ -1,22 +1,26 @@
 # ESP32-S3 인터넷 FM 라디오
 
-ESP32-S3 보드로 만든 한국 FM 라디오. **보드 두 종류**를 한 저장소에서 빌드한다.
+ESP32 보드로 만든 한국 FM 라디오. **보드 세 종류**를 한 저장소에서 빌드한다.
 
 | 보드 | 화면 | PlatformIO env | 특징 |
 |---|---|---|---|
 | Waveshare **ESP32-S3-ePaper-1.54** | ePaper 200×200 | `epaper` | 전원을 끊어도 그림이 남아 시계 모드가 성립 |
 | M5Stack **M5StickS3** | LCD 240×135 | `sticks3` | 손목시계처럼 — 평소 화면 끄고 집어 들면 켜짐 |
+| Waveshare **ESP32-P4-WIFI6-Touch-LCD-3.5** | 터치 LCD 480×320 | `p4` | 버튼 없이 화면을 눌러 조작. Wi-Fi 는 옆의 ESP32-C6 |
 
-MCU(ESP32-S3-PICO-1-N8R8)도 오디오 코덱(ES8311)도 같아서 스트리밍·선국·채널
-목록은 그대로 공유하고, 화면과 전원 관리만 보드별로 나뉜다.
+앞의 둘은 MCU(ESP32-S3-PICO-1-N8R8)가 같고, 셋 다 오디오 코덱이 ES8311 이라
+스트리밍·선국·채널 목록은 그대로 공유한다. 화면과 전원 관리, 조작만 보드별로
+나뉜다.
 
 ```bash
 pio run -e epaper  -t upload      # ePaper 판
 pio run -e sticks3 -t upload      # M5StickS3
+pio run -e p4      -t upload      # ESP32-P4
 ```
 
 기본 env 는 `epaper` 라 `-e` 를 빼면 그쪽이 올라간다. 아래 설명은 따로 표시가
-없으면 ePaper 판 기준이고, StickS3 는 [M5StickS3](#m5sticks3) 절에 모아 두었다.
+없으면 ePaper 판 기준이고, 나머지는 [M5StickS3](#m5sticks3) 와
+[ESP32-P4](#esp32-p4) 절에 모아 두었다.
 
 ## 먼저 알아둘 것 — 왜 "인터넷 스트리밍"인가
 
@@ -342,6 +346,105 @@ Wi-Fi 송신 피크에 전압이 주저앉아 우아하게 꺼지기 전에 그�
 새 펌웨어로 부팅하지 않으면 전원을 껐다 켜면 된다. 다운로드 모드에서는
 `COM8` 로 잡힌다(`platformio.ini` 의 `upload_port`).
 
+## ESP32-P4
+
+Waveshare **ESP32-P4-WIFI6-Touch-LCD-3.5**. 앞의 둘과 근본적으로 다른 것이 둘이다.
+
+**무선이 P4 안에 없다.** 옆에 붙은 ESP32-C6 가 SDIO 로 Wi-Fi 를 대신한다
+(ESP-Hosted). Arduino 3.3 이 감춰 주어 `WiFi.begin()` 은 그대로 쓰지만, 부팅에
+C6 리셋 1.5초가 더 들고, 호스트(P4 라이브러리)와 슬레이브(C6 펌웨어)의 버전이
+맞아야 한다. SDIO 핀(CLK 18 · CMD 19 · D0~D3 14~17 · RST 54)은 Arduino P4
+기본값과 같아서 따로 지정하지 않는다.
+
+**화면이 크고 터치가 된다.** 버튼이 없다. 화면이 곧 조작면이다.
+
+### 조작
+
+| 라디오 페이지 | |
+|---|---|
+| 다이얼을 누르거나 끌기 | 선국. 놓으면 가장 가까운 채널로 간다 |
+| 볼륨 슬라이더 끌기 | 볼륨 (끄는 동안 바로 반영) |
+| `<<` `\|\|` `>>` | 이전 · 일시정지/재개 · 다음 |
+| `MENU` | 채널 격자 페이지 |
+
+| 메뉴 페이지 | |
+|---|---|
+| 채널 15개 격자 | 누르면 그 채널로 |
+| `WI-FI` | Wi-Fi 설정 포털 |
+| `SCREEN OFF` | 화면 끄기 |
+| `POWER OFF` | 전원 끔 (AXP2101 이 진짜로 끊는다) |
+
+화면은 조작이 없으면 30초 뒤 어두워지고 3분 뒤 꺼진다. 꺼진 화면을 건드린
+첫 터치는 켜기로만 친다.
+
+### 핀맵
+
+벤더 Arduino 보드 계층(`Waveshare_LCD35/lcd35_board.h`)에서 가져왔다.
+
+| 블록 | 핀 |
+|---|---|
+| LCD ST7796 (SPI 80MHz) | MOSI 20 · SCK 21 · CS 23 · DC 26 · RST 27 · BL 28 |
+| 내부 I2C | SDA 7 · SCL 8 — 코덱 0x18 · 터치 FT6336 0x38 · PMIC AXP2101 0x34 |
+| ES8311 I2S | MCLK 13 · BCLK 12 · WS 10 · DOUT 9 · DIN 11 |
+| 스피커 앰프 | 53 (HIGH = 켜짐) |
+| SDIO → C6 | CLK 18 · CMD 19 · D0~D3 14~17 · RST 54 |
+| SD 카드 | CLK 43 · CMD 44 · D0~D3 39~42 (미사용) |
+
+### 이 개체의 칩은 rev v1.3 이다
+
+`esptool flash_id` 로 확인했다. rev1.x 와 rev3.x 는 SDK 라이브러리가 다르고
+(`esp32p4_es` / `esp32p4`) 서로 바꿔 올리면 안 된다. `platformio.ini` 는
+`board = esp32-p4`(ES, 360MHz)다. rev3 보드를 받으면 `esp32-p4_r3`(400MHz)로
+바꾼다.
+
+### 공장 출하 C6 펌웨어가 오래됐다
+
+호스트 2.12.11 의 버전 질의에 답하지 않고(0.0.0), 초기화 직후에 `WiFi.begin()`
+을 부르면 25초를 기다려도 붙지 않는다. 그런데 **10초쯤 뒤에 부르면 바로
+붙는다** — C6 갱신을 시도하느라 우연히 늦어진 부팅에서 발견했다. 그래서
+버전을 말해 주지 않는 슬레이브면 10초를 기다렸다가 접속한다.
+
+Arduino 코어에 같은 버전의 C6 펌웨어(`esp32c6-v2.12.11.bin`)가 들어 있고 P4 가
+SDIO 로 밀어 넣는 API 도 있어서, 그 바이너리를 P4 펌웨어에 함께 굽고 부팅
+때 버전이 다르면 갱신하는 경로(`c6update`)를 넣었다. 이 개체의 슬레이브는
+OTA RPC 자체를 몰라 실패하지만, NVS 로 두 번까지만 시도하고 그 뒤로는
+건너뛴다. 새 C6 펌웨어를 만나면 그때 동작할 것이다.
+
+이 슬레이브는 RSSI 질의에도 자주 답하지 않아 Wi-Fi 막대가 중간(2칸)으로
+그려지는 때가 있고, `WiFi.reconnect()` 도 소용없다. 붙었다가 끊기면 45초 뒤
+재시작한다 — 부팅 경로(C6 리셋 + 10초 대기)가 검증된 유일한 복구 방법이다.
+
+임베드는 `board_build.embed_files` 를 쓰지 않는다. 심볼에 파일 경로 전체가
+붙고 `.data` 로 들어가 1.2MB 를 RAM 에 복사하려 든다. `tools/p4_c6fw.py` 가
+코어 패키지 안의 바이너리 경로를 헤더로 만들고 `c6fw.S` 가 `.rodata` 에
+`.incbin` 한다.
+
+### 화면 버스는 Arduino_ESP32SPIDMA 다
+
+벤더 예제의 `Arduino_HWSPI`(Arduino `SPI` 객체 경유)는 P4 에서 480×320 한 장을
+보내는 데 **2.5초**가 걸렸다. 그리기 7ms, 전송 2,500ms. 청크를 32픽셀에서
+4096픽셀로 키워도 그대로라 Arduino SPI HAL 자체가 병목이다. IDF `spi_master`
++ DMA 를 직접 쓰는 `Arduino_ESP32SPIDMA` 로 바꾸니 **37ms** — 80MHz 이론값에
+가깝다.
+
+이 버스는 P4 에서 `spi_num` 이 "호스트 번호 + 1" 이라 SPI2_HOST 를 쓰려면 2 를
+넘겨야 한다. 기본값(`FSPI`=0)이면 호스트 -1 로 초기화가 죽는다. 벤더가 이
+버스를 피한 이유가 이것일 것이다.
+
+터치 폴링은 별도 태스크다. 화면 한 장을 보내는 동안 loop 가 멈추는데, 그
+사이 들어온 탭을 놓치지 않으려면 따로 돌아야 한다. 렌더 시간은 1분 상태
+로그에 `화면 N장 그리기 a/bms 전송 c/dms`(평균/최대)로 찍힌다.
+
+### 그 외
+
+- 전원관리는 AXP2101(XPowersLib). 게이지 퍼센트를 바로 읽고 `POWER OFF` 는
+  진짜 전원 차단이다. PWR 버튼으로 다시 켠다.
+- 외장 RTC 가 없어 부팅할 때마다 NTP 를 받는다. 온습도 센서도 없다.
+- 채널·볼륨은 NVS 에 둔다. PMIC 가 전원을 끊으면 RTC 메모리도 날아간다.
+- 로그는 USB CDC 가 아니라 UART0(GPIO 37/38) → CH343 이다. `USB TO UART` 쪽
+  Type-C 에 꽂아야 잡힌다(COM10). OTG 쪽에 꽂으면 아무 장치도 안 뜬다.
+- 카메라(OV5647, MIPI-CSI)는 후면이라 이 라디오에서는 쓰지 않는다.
+
 ## 빌드 & 플래시
 
 PlatformIO Core 가 필요하다.
@@ -372,8 +475,8 @@ pio device monitor
 ```
 
 `platformio.ini` 의 `upload_port` / `monitor_port` 는 env 별로 잡혀 있다
-(ePaper `COM5`, StickS3 `COM8`). 포트가 다르면 그 줄을 고치거나 두 줄을 지워서
-자동 탐색에 맡기면 된다.
+(ePaper `COM5`, StickS3 `COM8`, P4 `COM10`). 포트가 다르면 그 줄을 고치거나
+두 줄을 지워서 자동 탐색에 맡기면 된다.
 
 ### 무선 업데이트 (OTA)
 
@@ -439,7 +542,10 @@ src/
       main.cpp  config.h  ui.*  battery.*  rtcclock.*  sht.*  photo.h
     sticks3/              M5Stack M5StickS3
       main.cpp  config.h  ui.*  hw.*
-tools/                    사진을 photo.h 로 바꾸는 스크립트
+    p4/                   Waveshare ESP32-P4-WIFI6-Touch-LCD-3.5
+      main.cpp  config.h  ui.*  touch.*  hw.*
+      c6update.*  c6fw.S  C6 코프로세서 펌웨어 갱신
+tools/                    사진 변환 스크립트, P4 의 C6 펌웨어 경로 생성
 ```
 
 `platformio.ini` 의 `build_src_filter` 가 env 별로 `common/` + 해당 보드
@@ -651,6 +757,15 @@ ESP_PD_OPTION_ON)` 를 빠뜨리면 슬립 중 핀이 떠서 버튼을 눌러도
 버려서 Active-LOW 전원 레일이 저절로 다시 켜진다. `gpio_hold_en` +
 `gpio_deep_sleep_hold_en` 으로 붙잡되, **깨어난 뒤 반드시 풀어야 한다.** 안
 풀면 `setup` 의 `digitalWrite` 가 먹히지 않아 전원이 영영 안 켜진다.
+
+**P4 의 Arduino SPI 는 화면에 못 쓴다.** 480×320 한 장에 2.5초. IDF 드라이버
++ DMA 를 직접 쓰는 버스(`Arduino_ESP32SPIDMA`)로 37ms. 재기 전에는 "터치가
+느리다"로 보였다 — 원인을 그리기·전송으로 나눠 잰 뒤에야 갈렸다.
+
+**구형 ESP-Hosted 슬레이브는 RPC 가 막힌다.** 답하지 않는 RPC 하나가 호출한
+쪽을 10초 세운다. `WiFi.reconnect()` 를 10초마다 부르던 loop 가 사실상 항상
+막혀서 화면이 10초에 한 번 갱신됐고, 14시간 뒤 "잠에서 안 깨어난다"로 보였다.
+그 슬레이브에서 믿을 수 있는 복구는 재시작뿐이다.
 
 **한 I2C 포트에 마스터 드라이버를 둘 올릴 수 없다.** StickS3 에서 물렸다.
 M5Unified 는 PMIC·IMU 를 위해 내부 버스를 레거시 `driver/i2c.h` 로 잡는데,

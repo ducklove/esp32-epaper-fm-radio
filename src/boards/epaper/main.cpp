@@ -367,12 +367,37 @@ static void audioTask(void*) {
         }
 
         // 버퍼가 차서 실제로 소리가 나기 시작하면 BUFFERING → ON AIR
+        // 라이브러리 4.0 은 connecttohost() 가 바로 true 를 돌려주고 실제 접속은
+        // loop() 안에서 한다. 거기서 실패하면(DNS, TLS, 소켓) 로그만 남기고 멈춘다
+        // — 상태는 BUFFERING 인 채로. ERROR 에서만 재시도하던 상태 머신은 그
+        // 자리에서 영원히 기다렸다(P4 에서 국악FM DNS 실패로 6분간 무반응).
+        // 버퍼링이 이만큼 지나도 재생이 시작되지 않으면 오류로 쳐서 다시 붙는다.
+        // 재생 중 끊겨 BUFFERING 으로 돌아간 경우도 같은 길을 탄다.
+        constexpr uint32_t kStallMs = 45000;
+        static uint32_t bufferingSince = 0;
+        bool stalled = false;
+
         lockShared();
         if (shared.state == ST_BUFFERING && audio.isRunning()) shared.state = ST_PLAYING;
         else if (shared.state == ST_PLAYING && !audio.isRunning()) shared.state = ST_BUFFERING;
+        if (shared.state == ST_BUFFERING) {
+            if (!bufferingSince) bufferingSince = millis();
+            else if (millis() - bufferingSince > kStallMs) {
+                shared.state = ST_ERROR;
+                shared.detail = "STREAM STALL";
+                bufferingSince = 0;
+                stalled = true;
+            }
+        } else {
+            bufferingSince = 0;
+        }
         const PlayState st = shared.state;
         const uint8_t   idx = shared.index;
         unlockShared();
+        if (stalled) {
+            RLOGE("스트림이 %lu초 넘게 시작되지 않음 — 다시 붙는다",
+                  (unsigned long)(kStallMs / 1000));
+        }
 
         // 스트림이 죽었거나 연결에 실패했으면 알아서 다시 붙는다.
         // 방송사 서버를 두들기지 않게 간격을 둔다.

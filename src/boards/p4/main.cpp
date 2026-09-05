@@ -16,6 +16,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <atomic>
 #include <esp_system.h>
 
 #include "c6update.h"
@@ -23,6 +24,7 @@
 #include "es8311.h"
 #include "hw.h"
 #include "log.h"
+#include "listening.h"
 #include "secrets.h"
 #include "stations.h"
 #include "touch.h"
@@ -53,30 +55,47 @@ constexpr uint32_t kWifiPortalMs    = 5UL * 60 * 1000;
 static Audio  audio;
 static ES8311 codec;
 static TaskHandle_t audioTaskHandle = nullptr;
+static std::atomic<bool> wantMeters{false};
 
-struct Shared {
-    uint8_t   index = kDefaultIndex;
-    uint8_t   volume = kDefaultVolume;
-    bool      paused = false;
+struct Shared : ListeningSettings {
     PlayState state = ST_BOOT;
     String    detail;
     uint32_t  bitrate = 0;
     HwPower   power;
     int16_t   wifiRssi = 0;
     uint8_t   wifiBars = 0;
+    SleepTimer sleep;
+    AudioMeters meters;
+    uint32_t tuneRevision = 0;
+    uint32_t prefsRevision = 0;
+    bool maintenance = false;
+    bool audioIdle = false;
+    uint32_t maintenanceRevision = 0, idleRevision = 0;
 };
 static Shared            shared;
 static SemaphoreHandle_t sharedLock;
 
-static QueueHandle_t cmdQueue;
 static QueueHandle_t uiEventQueue;   // 터치 태스크 -> loop
-struct Cmd {
-    enum Kind : uint8_t { TUNE, PAUSE, RESUME } kind;
-    uint8_t index;
-};
 
 static inline void lockShared()   { xSemaphoreTake(sharedLock, portMAX_DELAY); }
 static inline void unlockShared() { xSemaphoreGive(sharedLock); }
+
+// 라이브러리의 PCM 처리 경계에서 EQ 계수를 갱신한다. loop 태스크에서
+// setTone() 을 호출하면 별도 디코더 태스크가 읽는 계수를 동시에 덮어쓸 수 있다.
+void p4ProcessAudioFrame() {
+    const bool meters = wantMeters.load(std::memory_order_relaxed);
+    audio.settings.VU_LEVEL = meters;
+    audio.settings.SPECTRUM = meters;
+    static uint8_t appliedTone = UINT8_MAX;
+    lockShared();
+    const uint8_t toneIndex = shared.tone;
+    unlockShared();
+    if (toneIndex != appliedTone) {
+        const auto& tone = kTonePresets[toneIndex];
+        audio.setTone(tone.bass, tone.mid, tone.treble);
+        appliedTone = toneIndex;
+    }
+}
 
 static void setState(PlayState st, const String& detail = String()) {
     lockShared();
@@ -92,24 +111,67 @@ static void loadPrefs() {
     if (p.begin("radio", true)) {
         const uint8_t idx = p.getUChar("station", kDefaultIndex);
         const uint8_t vol = p.getUChar("volume", kDefaultVolume);
+        const uint8_t tone = p.getUChar("tone", 0);
+        // 타이머 도중 재부팅되면 남은 시간을 추정해 계속 틀지 않고 정지한다.
+        // 외장 RTC 가 없으므로 NTP 접속 실패 때도 같은 보수적인 동작을 한다.
+        const bool paused = p.getBool("paused", false) || p.getBool("sleepArmed", false);
         p.end();
         lockShared();
         shared.index = (idx < kStationCount) ? idx : kDefaultIndex;
         shared.volume = (vol <= kVolumeSteps) ? vol : kDefaultVolume;
+        shared.tone = tone;
+        shared.paused = paused;
+        shared.validate(kStationCount, kVolumeSteps);
         unlockShared();
     }
 }
 
-static void savePrefs() {
+static uint32_t savedPrefsRevision = 0;
+static bool savePrefs() {
     lockShared();
     const uint8_t idx = shared.index, vol = shared.volume;
+    const uint8_t tone = shared.tone;
+    const bool paused = shared.paused;
+    const bool sleepArmed = shared.sleep.minutes() != 0;
+    const uint32_t revision = shared.prefsRevision;
     unlockShared();
     Preferences p;
     if (p.begin("radio", false)) {
-        p.putUChar("station", idx);
-        p.putUChar("volume", vol);
+        const bool ok = p.putUChar("station", idx) && p.putUChar("volume", vol) &&
+                        p.putUChar("tone", tone) && p.putBool("paused", paused) &&
+                        p.putBool("sleepArmed", sleepArmed);
         p.end();
+        if (ok) savedPrefsRevision = revision;
+        else RLOGE("청취 설정 저장 실패");
+        return ok;
     }
+    RLOGE("청취 설정 저장소 열기 실패");
+    return false;
+}
+
+// 슬라이더를 움직이는 동안 플래시를 계속 쓰지 않고 마지막 변경 1.5초 뒤 저장.
+static void flushPrefsWhenIdle() {
+    static uint32_t observed = 0, changedAt = 0;
+    lockShared();
+    const uint32_t revision = shared.prefsRevision;
+    unlockShared();
+    if (revision != observed) { observed = revision; changedAt = millis(); }
+    if (revision != savedPrefsRevision && millis() - changedAt >= 1500) {
+        savePrefs();
+        changedAt = millis();
+    }
+}
+
+static void tickSleepTimer() {
+    lockShared();
+    const bool expired = shared.sleep.expire(millis());
+    if (expired) {
+        shared.paused = true;
+        ++shared.tuneRevision;
+        ++shared.prefsRevision;
+    }
+    unlockShared();
+    if (expired) RLOGI("취침 타이머 만료 — 재생 중지");
 }
 
 // ── 시각 ──────────────────────────────────────────────────────────
@@ -160,6 +222,10 @@ static void tune(uint8_t index) {
     const Station& st = kStations[index];
 
     audio.stopSong();
+    lockShared();
+    shared.meters = {};
+    shared.bitrate = 0;
+    unlockShared();
     setState(ST_TUNING);
     RLOGI("선국: %s (%.1f MHz)", st.name, st.freq);
 
@@ -168,6 +234,11 @@ static void tune(uint8_t index) {
         setState(ST_ERROR, "NO STREAM");
         return;
     }
+    // URL 해석을 기다리는 동안 바뀐 선국/정지 요청은 재생을 시작하지 않는다.
+    lockShared();
+    const bool cancelled = shared.paused || shared.maintenance || shared.index != index;
+    unlockShared();
+    if (cancelled) return;
     if (!audio.connecttohost(url.c_str())) {
         setState(ST_ERROR, "CONNECT FAIL");
         return;
@@ -184,21 +255,16 @@ static void pauseAudio() {
     applyWifiPowerSave(false);
 
     lockShared();
-    shared.paused = true;
     shared.state = ST_PAUSED;
     shared.bitrate = 0;
+    shared.meters = {};
     unlockShared();
 }
 
-static void resumeAudio() {
+static void resumeAudio(uint8_t idx) {
     RLOGI("재개");
     applyWifiPowerSave(true);
     hwSpeakerAmp(true);
-
-    lockShared();
-    shared.paused = false;
-    const uint8_t idx = shared.index;
-    unlockShared();
 
     applyVolume();
     tune(idx);
@@ -207,25 +273,55 @@ static void resumeAudio() {
 static void audioTask(void*) {
     uint32_t codecRate = AUDIO_SAMPLE_RATE;
     uint32_t lastRetryMs = millis();
+    uint32_t bufferingSince = 0;
+    ListeningSettings applied;
+    uint32_t appliedTune = 0;
+    bool initialized = false;
 
     for (;;) {
-        Cmd cmd;
-        if (xQueueReceive(cmdQueue, &cmd, 0) == pdTRUE) {
-            switch (cmd.kind) {
-                case Cmd::TUNE:   tune(cmd.index); break;
-                case Cmd::PAUSE:  pauseAudio();    break;
-                case Cmd::RESUME: resumeAudio();   break;
+        tickSleepTimer();
+        lockShared();
+        const ListeningSettings desired = shared;
+        const uint32_t revision = shared.tuneRevision;
+        const bool maintenance = shared.maintenance;
+        const uint32_t maintenanceRevision = shared.maintenanceRevision;
+        const bool idle = shared.audioIdle && shared.idleRevision == maintenanceRevision;
+        unlockShared();
+        if (maintenance) {
+            bufferingSince = 0;
+            if (!idle) {
+                pauseAudio();
+                lockShared();
+                shared.audioIdle = true;
+                shared.idleRevision = maintenanceRevision;
+                unlockShared();
             }
+            initialized = false;
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
         }
+        lockShared();
+        shared.audioIdle = false;
+        unlockShared();
 
-        {
-            lockShared();
-            const bool paused = shared.paused;
-            unlockShared();
-            if (paused) {
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
-            }
+        // 전송/코덱 변경은 이 태스크만 한다(EQ 는 위 PCM 콜백). 큐가 차서 마지막 탭이
+        // 사라지지 않도록, 선국 중에도 요청은 최신 상태로 합쳐 둔다.
+        if (desired.paused) bufferingSince = 0;
+        switch (listeningChange(desired, applied, initialized, revision, appliedTune)) {
+            case PlaybackChange::PAUSE: pauseAudio(); break;
+            case PlaybackChange::RESTART:
+                bufferingSince = 0;
+                resumeAudio(desired.index);
+                break;
+            case PlaybackChange::VOLUME: applyVolume(); break;
+            case PlaybackChange::NONE: break;
+        }
+        applied = desired;
+        appliedTune = revision;
+        initialized = true;
+        if (desired.paused) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
         }
 
         audio.loop();
@@ -245,7 +341,6 @@ static void audioTask(void*) {
         // 버퍼링이 이만큼 지나도 재생이 시작되지 않으면 오류로 쳐서 다시 붙는다.
         // 재생 중 끊겨 BUFFERING 으로 돌아간 경우도 같은 길을 탄다.
         constexpr uint32_t kStallMs = 45000;
-        static uint32_t bufferingSince = 0;
         bool stalled = false;
 
         lockShared();
@@ -273,6 +368,7 @@ static void audioTask(void*) {
         if (st == ST_ERROR && WiFi.status() == WL_CONNECTED) {
             if (millis() - lastRetryMs > kRetryDelayMs) {
                 lastRetryMs = millis();
+                bufferingSince = 0;
                 tune(idx);
             }
         } else if (st != ST_ERROR) {
@@ -300,7 +396,15 @@ static UiState snapshotUi() {
     u.battVolts = shared.power.battMv / 1000.0f;
     u.wifiRssi = shared.wifiRssi;
     u.wifiBars = shared.wifiBars;
+    u.tone = shared.tone;
+    u.sleepMinutes = shared.sleep.minutes();
+    u.sleepSeconds = shared.sleep.remainingSeconds(millis());
+    u.meters = shared.meters;
+    u.controlsBlocked = shared.maintenance || shared.state == ST_BOOT || shared.state == ST_WIFI ||
+                        shared.state == ST_WIFISETUP || shared.state == ST_UPDATING;
+    u.controlsEpoch = shared.maintenanceRevision;
     unlockShared();
+    if (u.paused || u.state != ST_PLAYING || millis() - u.meters.updatedMs > 500) u.meters = {};
 
     u.freq = kStations[u.index].freq;
     u.name = kStations[u.index].name;
@@ -360,19 +464,46 @@ static void touchTask(void*) {
     for (;;) {
         const uint8_t n = touchRead(pts, 2);
         const UiState s = snapshotUi();
-        const UiEvent ev = uiHandleTouch(pts, n, s);
-        if (ev.action != UiAction::NONE) xQueueSend(uiEventQueue, &ev, 0);
+        UiEvent ev = uiHandleTouch(pts, n, s);
+        ev.epoch = s.controlsEpoch;
+        // loop 가 잠깐 느려져도 버튼의 마지막 뗌을 버리지 않는다.
+        if (ev.action != UiAction::NONE) xQueueSend(uiEventQueue, &ev, portMAX_DELAY);
         vTaskDelay(pdMS_TO_TICKS(kTouchPeriodMs));
     }
 }
 
 // ── 전원 끄기 ─────────────────────────────────────────────────────
+static void endMaintenance() {
+    xQueueReset(uiEventQueue);
+    lockShared();
+    shared.maintenance = false;
+    ++shared.tuneRevision;
+    unlockShared();
+}
+
+static bool beginMaintenance() {
+    lockShared();
+    shared.maintenance = true;
+    const uint32_t revision = ++shared.maintenanceRevision;
+    unlockShared();
+    if (!audioTaskHandle) return true;
+    const uint32_t started = millis();
+    while (millis() - started < 45000) {
+        lockShared();
+        const bool idle = shared.audioIdle && shared.idleRevision == revision;
+        unlockShared();
+        if (idle) return true;
+        delay(10);
+    }
+    // 잠금이나 네트워크 호출 도중 태스크를 강제 정지하면 교착될 수 있다.
+    RLOGE("오디오 정지 대기 시간 초과 — 작업 취소");
+    endMaintenance();
+    return false;
+}
+
 static void powerOff(const char* why) {
     RLOGI("전원 끔 (%s)", why);
-    if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
-    audio.stopSong();
-    codec.setMute(true);
-    hwSpeakerAmp(false);
+    if (!beginMaintenance()) return;
     WiFi.disconnect(true);
     savePrefs();
     uiScreenOff();
@@ -504,6 +635,8 @@ static void runWifiPortal() {
 
     if (saved) {
         RLOGI("새 Wi-Fi 정보 저장됨 — 재시작");
+        tickSleepTimer();
+        savePrefs();
         delay(300);
         ESP.restart();
     }
@@ -517,9 +650,10 @@ static void setupOta() {
     ArduinoOTA.setPassword(OTA_PASSWORD);
     ArduinoOTA.onStart([]() {
         RLOGI("OTA 시작");
-        if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
-        audio.stopSong();
-        codec.setMute(true);
+        // OTA 는 onStart 뒤 본문을 수신한다. 안전하게 정지할 수 없으면
+        // 본문 쓰기 전에 재시작해 기존 펌웨어를 유지한다.
+        if (!beginMaintenance()) { ESP.restart(); return; }
+        savePrefs();
         setState(ST_UPDATING);
         uiWake();
         uiRender(snapshotUi());
@@ -534,8 +668,13 @@ static void setupOta() {
     });
     ArduinoOTA.onError([](ota_error_t e) {
         RLOGE("OTA 실패: %u", (unsigned)e);
-        setState(ST_ERROR, "OTA FAIL");
-        if (audioTaskHandle) vTaskResume(audioTaskHandle);
+        lockShared();
+        const bool wasMaintenance = shared.maintenance;
+        unlockShared();
+        if (wasMaintenance) {
+            setState(ST_ERROR, "OTA FAIL");
+            endMaintenance();
+        }
     });
     ArduinoOTA.begin();
     RLOGI("OTA 대기: %s (%s)", OTA_HOSTNAME, WiFi.localIP().toString().c_str());
@@ -575,7 +714,6 @@ void setup() {
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000UL);
 
     sharedLock = xSemaphoreCreateMutex();
-    cmdQueue = xQueueCreate(4, sizeof(Cmd));
     uiEventQueue = xQueueCreate(8, sizeof(UiEvent));
     loadPrefs();
 
@@ -620,23 +758,48 @@ void setup() {
         uiRender(snapshotUi());
         return;
     }
-    applyVolume();
-    hwSpeakerAmp(true);
+    codec.setMute(true);
+    hwSpeakerAmp(false);
     RLOGI("코덱 준비 완료");
 
     Audio::audio_info_callback = [](Audio::msg_t m) {
+        const bool meter = m.e == Audio::evt_vu || m.e == Audio::evt_spectrum;
         const bool noisy = (m.e == Audio::evt_info);
-        if (m.msg && (AUDIO_VERBOSE_LOG || !noisy)) {
+        if (m.msg && !meter && (AUDIO_VERBOSE_LOG || !noisy)) {
             Serial.printf("[A/%s] %s\n", m.s ? m.s : "?", m.msg);
         }
         switch (m.e) {
+            case Audio::evt_vu:
+                if (m.vec1.size() >= 4) {
+                    lockShared();
+                    shared.meters.left = meterByte(m.vec1[0]);
+                    shared.meters.right = meterByte(m.vec1[1]);
+                    shared.meters.peakLeft = meterByte(m.vec1[2]);
+                    shared.meters.peakRight = meterByte(m.vec1[3]);
+                    shared.meters.updatedMs = millis();
+                    unlockShared();
+                }
+                break;
+            case Audio::evt_spectrum:
+                if (m.vec1.size() >= kSpectrumBands) {
+                    lockShared();
+                    for (uint8_t i = 0; i < kSpectrumBands; ++i)
+                        shared.meters.bands[i] = meterByte(m.vec1[i]);
+                    unlockShared();
+                }
+                break;
             case Audio::evt_bitrate:
                 lockShared();
                 shared.bitrate = (uint32_t)(m.arg1 > 0 ? m.arg1 : 0);
                 unlockShared();
                 break;
             case Audio::evt_eof:
-                setState(ST_ERROR, "RECONNECT");
+                lockShared();
+                if (!shared.paused && !shared.maintenance) {
+                    shared.state = ST_ERROR;
+                    shared.detail = "RECONNECT";
+                }
+                unlockShared();
                 break;
             default:
                 break;
@@ -645,59 +808,66 @@ void setup() {
 
     xTaskCreatePinnedToCore(audioTask, "audio", 16384, nullptr, 3, &audioTaskHandle, 1);
 
-    lockShared();
-    const uint8_t startIndex = shared.index;
-    unlockShared();
-    const Cmd cmd{Cmd::TUNE, startIndex};
-    xQueueSend(cmdQueue, &cmd, 0);
 }
 
 // 터치 이벤트를 실제 동작으로.
 static void handleUiEvent(const UiEvent& ev) {
+    lockShared();
+    const bool maintenance = shared.maintenance;
+    const uint32_t epoch = shared.maintenanceRevision;
+    unlockShared();
+    if (maintenance || ev.epoch != epoch) return;
     switch (ev.action) {
         case UiAction::NONE:
             return;
         case UiAction::TUNE:
         case UiAction::PREV:
         case UiAction::NEXT: {
+            if (ev.action == UiAction::TUNE && ev.value >= kStationCount) return;
             lockShared();
             if (ev.action == UiAction::TUNE)      shared.index = ev.value;
             else if (ev.action == UiAction::NEXT) shared.index = (uint8_t)((shared.index + 1) % kStationCount);
             else                                  shared.index = (uint8_t)((shared.index + kStationCount - 1) % kStationCount);
             shared.bitrate = 0;
-            const uint8_t idx = shared.index;
-            const bool paused = shared.paused;
+            shared.paused = false;
+            ++shared.tuneRevision;
+            ++shared.prefsRevision;
             unlockShared();
-            savePrefs();
-            if (paused) {
-                const Cmd c{Cmd::RESUME, 0};   // 멈춘 채로 채널을 고르면 그 채널로 재개
-                xQueueSend(cmdQueue, &c, 0);
-            } else {
-                const Cmd c{Cmd::TUNE, idx};
-                xQueueSend(cmdQueue, &c, 0);
-            }
             break;
         }
         case UiAction::TOGGLE_PAUSE: {
             lockShared();
-            const bool paused = shared.paused;
+            shared.paused = !shared.paused;
+            ++shared.tuneRevision;
+            ++shared.prefsRevision;
             unlockShared();
-            const Cmd c{paused ? Cmd::RESUME : Cmd::PAUSE, 0};
-            xQueueSend(cmdQueue, &c, 0);
             break;
         }
         case UiAction::VOLUME: {
             lockShared();
             shared.volume = (ev.value > kVolumeSteps) ? kVolumeSteps : ev.value;
+            ++shared.prefsRevision;
             unlockShared();
-            applyVolume();
             break;
         }
+        case UiAction::TONE:
+            if (ev.value >= kTonePresetCount) return;
+            lockShared();
+            shared.tone = ev.value;
+            ++shared.prefsRevision;
+            unlockShared();
+            break;
+        case UiAction::SLEEP:
+            lockShared();
+            shared.sleep.cycle(millis());
+            ++shared.prefsRevision;
+            unlockShared();
+            break;
         case UiAction::WIFI_SETUP:
-            if (audioTaskHandle) vTaskSuspend(audioTaskHandle);
-            audio.stopSong();
+            if (!beginMaintenance()) break;
+            savePrefs();
             runWifiPortal();
-            if (audioTaskHandle) vTaskResume(audioTaskHandle);
+            endMaintenance();
             break;
         case UiAction::SCREEN_OFF:
             uiScreenOff();
@@ -709,6 +879,8 @@ static void handleUiEvent(const UiEvent& ev) {
 }
 
 void loop() {
+    tickSleepTimer();
+    flushPrefsWhenIdle();
     static uint32_t lastRetry = 0;
     static uint32_t wifiDownSince = 0;   // 끊김을 처음 본 시각. 붙어 있으면 0
     if (wifiRecovery) {
@@ -759,11 +931,13 @@ void loop() {
 
     // 끌고 있으면 바늘·슬라이더가 손을 따라가야 한다. 다만 폴링마다가 아니라
     // 20fps 로 — 한 장 전송이 끝나기 전에 다음 장을 그릴 이유가 없다.
-    if (uiNeedsRedraw() && uiScreenIsOn() && millis() - lastUiMs >= kDragFrameMs) {
+    const uint32_t frameMs = uiNeedsRedraw() ? kDragFrameMs : 100;
+    if ((uiNeedsRedraw() || uiShowsMeters()) && uiScreenIsOn() && millis() - lastUiMs >= frameMs) {
         uiRender(snapshotUi());
         lastUiMs = millis();
     }
     uiTickBacklight();
+    wantMeters.store(uiShowsMeters() && uiScreenIsOn(), std::memory_order_relaxed);
 
     if (WiFi.status() == WL_CONNECTED) ArduinoOTA.handle();
 

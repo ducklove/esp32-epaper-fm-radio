@@ -13,6 +13,7 @@
 #include <Arduino.h>
 
 #include "touch.h"
+#include "listening.h"
 
 enum PlayState : uint8_t {
     ST_BOOT,
@@ -37,6 +38,12 @@ struct UiState {
     uint8_t   volume = 0;
     uint8_t   volumeMax = 20;
     uint32_t  bitrate = 0;
+    uint8_t   tone = 0;
+    uint8_t   sleepMinutes = 0;
+    uint32_t  sleepSeconds = 0;
+    AudioMeters meters;
+    bool      controlsBlocked = false;
+    uint32_t  controlsEpoch = 0;
 
     bool      wifi = false;
     uint8_t   wifiBars = 0;
@@ -64,6 +71,8 @@ enum class UiAction : uint8_t {
     NEXT,
     TOGGLE_PAUSE,
     VOLUME,        // value = 0..volumeMax
+    TONE,          // value = 프리셋 인덱스
+    SLEEP,         // 끔 -> 15 -> 30 -> 60 -> 90분
     WIFI_SETUP,
     SCREEN_OFF,
     POWER_OFF,
@@ -72,6 +81,7 @@ enum class UiAction : uint8_t {
 struct UiEvent {
     UiAction action = UiAction::NONE;
     uint8_t  value = 0;
+    uint32_t epoch = 0;  // 정비 모드 진입 전의 밀린 이벤트는 폐기한다.
 };
 
 void uiBegin();
@@ -83,8 +93,10 @@ UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s);
 
 // 드래그 중이면 상태가 안 바뀌어도 다시 그려야 한다.
 bool uiNeedsRedraw();
+bool uiShowsMeters();
 
-// 터치는 별도 태스크에서, 그리기는 loop 에서 돈다. 둘 다 이 잠금 안에서.
+// 터치는 별도 태스크에서, 그리기는 loop 에서 돈다. 상태 접근을 잠그되
+// 캔버스의 SPI 전송 중에는 풀어서 터치 폴링이 계속되게 한다.
 void uiLock();
 void uiUnlock();
 

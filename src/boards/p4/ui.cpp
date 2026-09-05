@@ -55,6 +55,8 @@ constexpr Rect R_PREV{12, BTN_Y, 96, BTN_H};
 constexpr Rect R_PLAY{120, BTN_Y, 96, BTN_H};
 constexpr Rect R_NEXT{228, BTN_Y, 96, BTN_H};
 constexpr Rect R_MENU{372, BTN_Y, 96, BTN_H};
+constexpr Rect R_SOUND{8, 38, 96, 58};
+constexpr Rect R_SLEEP{376, 38, 96, 58};
 // 다이얼과 슬라이더는 손가락이 굵으니 넉넉하게 잡는다.
 constexpr Rect R_DIAL{0, NEEDLE_TOP - 10, W, (DIAL_Y + 26) - (NEEDLE_TOP - 10)};
 constexpr Rect R_VOL{VOL_L - 30, VOL_Y - 12, VOL_R - VOL_L + 60, VOL_H + 24};
@@ -65,6 +67,10 @@ constexpr Rect R_BACK{W - 96, 2, 92, 28};
 constexpr Rect R_WIFI{8, 244, 148, 62};
 constexpr Rect R_SCREENOFF{166, 244, 148, 62};
 constexpr Rect R_POWER{324, 244, 148, 62};
+constexpr Rect R_TONES[] = {{8, 44, 110, 46}, {126, 44, 110, 46},
+                            {244, 44, 110, 46}, {362, 44, 110, 46}};
+constexpr Rect R_SOUND_SLEEP{8, 250, 226, 58};
+constexpr Rect R_SOUND_PLAY{246, 250, 226, 58};
 
 // ── 화면 객체 ─────────────────────────────────────────────────────
 // 깜빡임 없이 그리려고 PSRAM 캔버스(480x320x2 = 300KB)에 그린 뒤 통째로
@@ -87,7 +93,7 @@ Arduino_DataBus* bus = nullptr;
 Arduino_GFX*     panel = nullptr;
 Arduino_Canvas*  gfx = nullptr;
 
-enum class Page : uint8_t { RADIO, MENU };
+enum class Page : uint8_t { RADIO, MENU, SOUND };
 Page page = Page::RADIO;
 
 // ── 터치 제스처 ───────────────────────────────────────────────────
@@ -285,6 +291,9 @@ void drawVolume(const UiState& s) {
 
 void renderRadio(const UiState& s) {
     drawHeader(s);
+    button(R_SOUND, "SOUND", pressedIn(R_SOUND), s.tone ? COL_ACCENT : COL_DIM);
+    button(R_SLEEP, s.sleepMinutes ? String((s.sleepSeconds + 59) / 60) + "m" : "SLEEP",
+           pressedIn(R_SLEEP), s.sleepMinutes ? COL_WARN : COL_DIM);
 
     if (!dragging) {
         char freq[8];
@@ -302,6 +311,46 @@ void renderRadio(const UiState& s) {
     button(R_PLAY, s.paused ? ">" : "||", pressedIn(R_PLAY), s.paused ? COL_OK : COL_INK);
     button(R_NEXT, ">>", pressedIn(R_NEXT));
     button(R_MENU, "MENU", pressedIn(R_MENU));
+}
+
+// ── 음색/미터 페이지 ─────────────────────────────────────────────
+void drawMeter(const char* label, int16_t y, uint8_t level, uint8_t peak) {
+    text(label, 10, y, COL_DIM, nullptr, 1);
+    constexpr int16_t left = 28, width = 442;
+    gfx->fillRect(left, y, width, 10, COL_BTN);
+    const int16_t fill = int32_t(level) * width / 255;
+    if (fill) gfx->fillRect(left, y, fill, 10, level > 220 ? COL_WARN : COL_OK);
+    const int16_t px = left + int32_t(peak) * (width - 2) / 255;
+    if (peak) gfx->fillRect(px, y, 2, 10, COL_INK);
+}
+
+void renderSound(const UiState& s) {
+    text("SOUND", 8, 8, COL_INK, nullptr, 2);
+    text(String(s.freq, 1) + " MHz", 180, 10, COL_DIM, nullptr, 1);
+    button(R_BACK, "BACK", pressedIn(R_BACK));
+    for (uint8_t i = 0; i < kTonePresetCount; ++i)
+        button(R_TONES[i], kTonePresets[i].name, pressedIn(R_TONES[i]),
+               s.tone == i ? COL_ACCENT : COL_DIM);
+    const auto& tone = kTonePresets[s.tone < kTonePresetCount ? s.tone : 0];
+    text("BASS " + String(tone.bass) + "   MID " + String(tone.mid) +
+         "   TREBLE " + String(tone.treble) + " dB", W / 2, 100, COL_DIM, nullptr, 1, AL_CENTER);
+
+    // 라이브러리가 계산한 실제 PCM 신호(코덱 음량 적용 전). 정지/스톨이면 0.
+    drawMeter("L", 118, s.meters.left, s.meters.peakLeft);
+    drawMeter("R", 134, s.meters.right, s.meters.peakRight);
+    for (uint8_t i = 0; i < kSpectrumBands; ++i) {
+        const int16_t x = 12 + i * 31;
+        const int16_t h = int32_t(s.meters.bands[i]) * 68 / 255;
+        gfx->fillRect(x, 154, 22, 68, COL_BTN);
+        if (h) gfx->fillRect(x, 222 - h, 22, h, COL_ACCENT);
+    }
+    text("LOW", 12, 229, COL_DIM, nullptr, 1);
+    text("INPUT / BEFORE EQ + VOL", W / 2, 229, COL_DIM, nullptr, 1, AL_CENTER);
+    text("HIGH", W - 12, 229, COL_DIM, nullptr, 1, AL_RIGHT);
+    String sleep = "SLEEP OFF";
+    if (s.sleepMinutes) sleep = "SLEEP " + String(s.sleepSeconds / 60) + ":" + two(s.sleepSeconds % 60);
+    button(R_SOUND_SLEEP, sleep, pressedIn(R_SOUND_SLEEP), s.sleepMinutes ? COL_WARN : COL_INK);
+    button(R_SOUND_PLAY, s.paused ? "PLAY" : "PAUSE", pressedIn(R_SOUND_PLAY));
 }
 
 // ── 메뉴 페이지 ───────────────────────────────────────────────────
@@ -330,8 +379,8 @@ void renderMenu(const UiState& s) {
 }  // namespace
 
 // ── 공개 ──────────────────────────────────────────────────────────
-void uiLock()   { if (uiMutex) xSemaphoreTake(uiMutex, portMAX_DELAY); }
-void uiUnlock() { if (uiMutex) xSemaphoreGive(uiMutex); }
+void uiLock()   { if (uiMutex) xSemaphoreTakeRecursive(uiMutex, portMAX_DELAY); }
+void uiUnlock() { if (uiMutex) xSemaphoreGiveRecursive(uiMutex); }
 
 UiTiming uiTakeTiming() {
     UiTiming t;
@@ -349,7 +398,7 @@ UiTiming uiTakeTiming() {
 }
 
 void uiBegin() {
-    uiMutex = xSemaphoreCreateMutex();
+    uiMutex = xSemaphoreCreateRecursiveMutex();
     hwBacklight(0);
 #if LCD_BUS == 1
     bus = new Arduino_ESP32SPIDMA(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK, PIN_LCD_MOSI,
@@ -370,6 +419,7 @@ void uiBegin() {
     const bool ok = gfx->begin(LCD_SPI_HZ);
     RLOGI("LCD 초기화 %s (버스 %s, %lu Hz, 회전 %u)", ok ? "OK" : "실패", busName,
           (unsigned long)LCD_SPI_HZ, (unsigned)LCD_ROTATION);
+    if (!ok) { delete gfx; gfx = nullptr; return; }
 
     screenOn = true;
     curBright = SCREEN_BRIGHT;
@@ -398,12 +448,17 @@ void uiRender(const UiState& s) {
     const uint32_t t0 = millis();
     gfx->fillScreen(COL_BG);
     if (page == Page::MENU) renderMenu(s);
+    else if (page == Page::SOUND) renderSound(s);
     else                    renderRadio(s);
     const uint32_t t1 = millis();
+    // 캔버스 쓰기는 loop 만 한다. 전송 중에는 터치 상태 잠금을 풀어
+    // 47ms 가량의 SPI 전송 때문에 짧은 탭을 놓치지 않게 한다.
+    uiUnlock();
     gfx->flush();
     const uint32_t t2 = millis();
 
     const uint32_t d = t1 - t0, f = t2 - t1;
+    uiLock();
     tDrawSum += d;  if (d > tDrawMax) tDrawMax = d;
     tFlushSum += f; if (f > tFlushMax) tFlushMax = f;
     tFrames++;
@@ -412,6 +467,7 @@ void uiRender(const UiState& s) {
 
 void uiRenderWifiSetup(const UiState& s) {
     if (!gfx) return;
+    uiLock();
     uiWake();
     gfx->fillScreen(COL_BG);
 
@@ -426,9 +482,11 @@ void uiRenderWifiSetup(const UiState& s) {
     text("2.4GHz only - 5 min timeout", 12, 296, COL_DIM, nullptr, 2);
 
     gfx->flush();
+    uiUnlock();
 }
 
-bool uiNeedsRedraw() { return dirty; }
+bool uiNeedsRedraw() { uiLock(); const bool value = dirty; uiUnlock(); return value; }
+bool uiShowsMeters() { uiLock(); const bool value = page == Page::SOUND; uiUnlock(); return value; }
 
 UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s) {
     UiEvent ev;
@@ -436,6 +494,15 @@ UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s) {
     // 아무것도 안 눌려 있고 직전에도 아니었으면 할 일이 없다. 잠금도 잡지 않는다.
     if (!down && !touchWas) return ev;
     uiLock();
+
+    if (s.controlsBlocked) {
+        gest = Gest::SWALLOW;
+        dragging = volDragging = false;
+        touchWas = down;
+        if (down) uiWake();
+        uiUnlock();
+        return ev;
+    }
 
     if (down) {
         lastX = pts[0].x;
@@ -457,6 +524,8 @@ UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s) {
                     else if (R_PLAY.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &R_PLAY; }
                     else if (R_NEXT.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &R_NEXT; }
                     else if (R_MENU.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &R_MENU; }
+                    else if (R_SOUND.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &R_SOUND; }
+                    else if (R_SLEEP.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &R_SLEEP; }
                     else if (R_VOL.contains(lastX, lastY)) {
                         gest = Gest::VOL;
                         volDragging = true;
@@ -467,6 +536,13 @@ UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s) {
                         gest = Gest::DIAL;
                         dragging = true;
                         dragFreq = xToFreq(lastX);
+                    }
+                } else if (page == Page::SOUND) {
+                    if (R_BACK.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &R_BACK; }
+                    else if (R_SOUND_SLEEP.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &R_SOUND_SLEEP; }
+                    else if (R_SOUND_PLAY.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &R_SOUND_PLAY; }
+                    else for (const auto& r : R_TONES) {
+                        if (r.contains(lastX, lastY)) { gest = Gest::BTN; gestBtn = &r; break; }
                     }
                 } else {
                     if (R_BACK.contains(lastX, lastY))           { gest = Gest::BTN; gestBtn = &R_BACK; }
@@ -518,6 +594,15 @@ UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s) {
                     else if (gestBtn == &R_PLAY) ev.action = UiAction::TOGGLE_PAUSE;
                     else if (gestBtn == &R_NEXT) ev.action = UiAction::NEXT;
                     else if (gestBtn == &R_MENU) page = Page::MENU;
+                    else if (gestBtn == &R_SOUND) page = Page::SOUND;
+                    else if (gestBtn == &R_SLEEP) ev.action = UiAction::SLEEP;
+                } else if (page == Page::SOUND && gestBtn && gestBtn->contains(lastX, lastY)) {
+                    if (gestBtn == &R_BACK) page = Page::RADIO;
+                    else if (gestBtn == &R_SOUND_SLEEP) ev.action = UiAction::SLEEP;
+                    else if (gestBtn == &R_SOUND_PLAY) ev.action = UiAction::TOGGLE_PAUSE;
+                    else for (uint8_t i = 0; i < kTonePresetCount; ++i) {
+                        if (gestBtn == &R_TONES[i]) { ev.action = UiAction::TONE; ev.value = i; break; }
+                    }
                 } else if (page == Page::MENU) {
                     if (gestBtn && gestBtn->contains(lastX, lastY)) {
                         if (gestBtn == &R_BACK)           page = Page::RADIO;
@@ -551,16 +636,19 @@ UiEvent uiHandleTouch(const TouchPoint* pts, uint8_t n, const UiState& s) {
 
 // ── 백라이트 ─────────────────────────────────────────────────────
 void uiWake() {
+    uiLock();
     lastWakeMs = millis();
     screenOn = true;
     if (curBright != SCREEN_BRIGHT) {
         curBright = SCREEN_BRIGHT;
         hwBacklight(curBright);
     }
+    uiUnlock();
 }
 
 void uiTickBacklight() {
-    if (!screenOn) return;
+    uiLock();
+    if (!screenOn) { uiUnlock(); return; }
     const uint32_t idle = millis() - lastWakeMs;
     if (idle > SCREEN_OFF_MS) {
         uiScreenOff();
@@ -568,12 +656,15 @@ void uiTickBacklight() {
         curBright = SCREEN_DIM;
         hwBacklight(curBright);
     }
+    uiUnlock();
 }
 
-bool uiScreenIsOn() { return screenOn; }
+bool uiScreenIsOn() { uiLock(); const bool value = screenOn; uiUnlock(); return value; }
 
 void uiScreenOff() {
+    uiLock();
     curBright = 0;
     hwBacklight(0);
     screenOn = false;
+    uiUnlock();
 }

@@ -1,7 +1,11 @@
 // 그래픽/버스 호출만 대체한다. 페이지 전환과 터치 판정은 제품 코드를 실행한다.
 #pragma once
 #include "Arduino.h"
-struct GFXfont {};
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+struct GFXglyph { uint16_t bitmapOffset; uint8_t width, height, xAdvance; int8_t xOffset, yOffset; };
+struct GFXfont { uint8_t* bitmap; GFXglyph* glyph; uint16_t first, last; uint8_t yAdvance; };
 constexpr int GFX_NOT_DEFINED = -1, FSPI = 0;
 inline void (*testOnFlush)() = nullptr;
 class Arduino_DataBus {};

@@ -2,7 +2,9 @@
 
 #include <Arduino_GFX_Library.h>
 #include <Fonts/FreeSans12pt7b.h>
-#include <Fonts/FreeSansBold24pt7b.h>
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include "dial_font.h"
 
 #include "config.h"
 #include "hw.h"
@@ -16,33 +18,36 @@ constexpr int16_t H = LCD_H;
 
 // ── 색 ────────────────────────────────────────────────────────────
 // 강조는 바늘과 현재 채널에만. 화면이 커도 색이 많으면 산만하다.
-constexpr uint16_t COL_BG       = 0x0000;
-constexpr uint16_t COL_INK      = 0xFFFF;
-constexpr uint16_t COL_DIM      = 0x8410;
-constexpr uint16_t COL_RULE     = 0x39E7;
-constexpr uint16_t COL_NEEDLE   = 0xFB00;
-constexpr uint16_t COL_OK       = 0x2E68;
-constexpr uint16_t COL_WARN     = 0xFBE0;
-constexpr uint16_t COL_BTN      = 0x2124;
-constexpr uint16_t COL_BTN_DOWN = 0x4A69;
-constexpr uint16_t COL_ACCENT   = 0x04DF;
+constexpr uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) {
+    return ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
+}
+constexpr uint16_t COL_BG       = rgb(16, 25, 29);
+constexpr uint16_t COL_INK      = rgb(240, 235, 220);
+constexpr uint16_t COL_DIM      = rgb(159, 178, 180);
+constexpr uint16_t COL_RULE     = rgb(47, 66, 71);
+constexpr uint16_t COL_NEEDLE   = rgb(174, 75, 48);
+constexpr uint16_t COL_OK       = rgb(116, 189, 163);
+constexpr uint16_t COL_WARN     = rgb(227, 181, 109);
+constexpr uint16_t COL_BTN      = rgb(28, 42, 47);
+constexpr uint16_t COL_BTN_DOWN = rgb(50, 68, 71);
+constexpr uint16_t COL_ACCENT   = rgb(222, 177, 109);
+constexpr uint16_t COL_PAPER    = rgb(235, 229, 212);
+constexpr uint16_t COL_PAPER_DIM = rgb(100, 106, 99);
+constexpr uint16_t COL_PAPER_RULE = rgb(195, 193, 177);
 
 // ── 배치 (라디오 페이지) ──────────────────────────────────────────
-constexpr int16_t HDR_H      = 28;
-constexpr int16_t FREQ_Y     = 86;    // 큰 숫자 베이스라인
-constexpr int16_t NAME_Y     = 118;
 constexpr float   kDialMin   = 88.0f;
 constexpr float   kDialMax   = 108.0f;
 constexpr int16_t DIAL_L     = 28;
 constexpr int16_t DIAL_R     = W - 28;
-constexpr int16_t DIAL_Y     = 178;   // 눈금 기준선
-constexpr int16_t NEEDLE_TOP = 134;
-constexpr int16_t VOL_Y      = 214;   // 슬라이더 트랙 상단
-constexpr int16_t VOL_H      = 12;
-constexpr int16_t VOL_L      = 72;
-constexpr int16_t VOL_R      = W - 24;
-constexpr int16_t BTN_Y      = 246;
-constexpr int16_t BTN_H      = 62;
+constexpr int16_t DIAL_Y     = 184;
+constexpr int16_t NEEDLE_TOP = 165;
+constexpr int16_t VOL_Y      = 229;
+constexpr int16_t VOL_H      = 4;
+constexpr int16_t VOL_L      = 82;
+constexpr int16_t VOL_R      = 414;
+constexpr int16_t BTN_Y      = 258;
+constexpr int16_t BTN_H      = 52;
 
 struct Rect {
     int16_t x, y, w, h;
@@ -51,26 +56,26 @@ struct Rect {
     }
 };
 
-constexpr Rect R_PREV{12, BTN_Y, 96, BTN_H};
-constexpr Rect R_PLAY{120, BTN_Y, 96, BTN_H};
-constexpr Rect R_NEXT{228, BTN_Y, 96, BTN_H};
-constexpr Rect R_MENU{372, BTN_Y, 96, BTN_H};
-constexpr Rect R_SOUND{8, 38, 96, 58};
-constexpr Rect R_SLEEP{376, 38, 96, 58};
+constexpr Rect R_PREV{100, BTN_Y, 66, BTN_H};
+constexpr Rect R_PLAY{184, BTN_Y, 104, BTN_H};
+constexpr Rect R_NEXT{306, BTN_Y, 66, BTN_H};
+constexpr Rect R_MENU{390, BTN_Y, 78, BTN_H};
+constexpr Rect R_SOUND{12, BTN_Y, 78, BTN_H};
+constexpr Rect R_SLEEP{384, 46, 72, 44};
 // 다이얼과 슬라이더는 손가락이 굵으니 넉넉하게 잡는다.
-constexpr Rect R_DIAL{0, NEEDLE_TOP - 10, W, (DIAL_Y + 26) - (NEEDLE_TOP - 10)};
-constexpr Rect R_VOL{VOL_L - 30, VOL_Y - 12, VOL_R - VOL_L + 60, VOL_H + 24};
+constexpr Rect R_DIAL{12, 160, 456, 48};
+constexpr Rect R_VOL{52, 213, 392, 36};
 
 // ── 배치 (메뉴 페이지) ────────────────────────────────────────────
-constexpr int16_t GRID_X = 4, GRID_Y = 34, CELL_W = 92, CELL_H = 62, GAP = 3, COLS = 5;
-constexpr Rect R_BACK{W - 96, 2, 92, 28};
-constexpr Rect R_WIFI{8, 244, 148, 62};
-constexpr Rect R_SCREENOFF{166, 244, 148, 62};
-constexpr Rect R_POWER{324, 244, 148, 62};
-constexpr Rect R_TONES[] = {{8, 44, 110, 46}, {126, 44, 110, 46},
-                            {244, 44, 110, 46}, {362, 44, 110, 46}};
-constexpr Rect R_SOUND_SLEEP{8, 250, 226, 58};
-constexpr Rect R_SOUND_PLAY{246, 250, 226, 58};
+constexpr int16_t GRID_X = 14, GRID_Y = 62, CELL_W = 86, CELL_H = 54, GAP = 6, COLS = 5;
+constexpr Rect R_BACK{400, 8, 68, 44};
+constexpr Rect R_WIFI{12, 252, 144, 58};
+constexpr Rect R_SCREENOFF{168, 252, 144, 58};
+constexpr Rect R_POWER{324, 252, 144, 58};
+constexpr Rect R_TONES[] = {{12, 56, 108, 46}, {128, 56, 108, 46},
+                            {244, 56, 108, 46}, {360, 56, 108, 46}};
+constexpr Rect R_SOUND_SLEEP{12, 254, 222, 56};
+constexpr Rect R_SOUND_PLAY{246, 254, 222, 56};
 
 // ── 화면 객체 ─────────────────────────────────────────────────────
 // 깜빡임 없이 그리려고 PSRAM 캔버스(480x320x2 = 300KB)에 그린 뒤 통째로
@@ -201,179 +206,181 @@ void text(const String& s, int16_t x, int16_t y, uint16_t color, const GFXfont* 
     gfx->print(s);
 }
 
+// 가변 길이 문구를 영역 안에 맞춘다.
+void fitText(const String& value, int16_t x, int16_t y, int16_t maxWidth,
+             uint16_t color, const GFXfont* font, Align align = AL_LEFT) {
+    char out[128];
+    snprintf(out, sizeof(out), "%s", value.c_str());
+    gfx->setFont(font);
+    gfx->setTextSize(1);
+    int16_t bx, by;
+    uint16_t bw, bh;
+    size_t n = strlen(out);
+    while (n) {
+        gfx->getTextBounds(out, 0, 0, &bx, &by, &bw, &bh);
+        if (bw <= maxWidth) break;
+        out[--n] = '\0';
+        if (n >= 3) out[n - 1] = out[n - 2] = out[n - 3] = '.';
+    }
+    text(out, x, y, color, font, 1, align);
+}
 void button(const Rect& r, const String& label, bool pressed, uint16_t ink = COL_INK) {
-    gfx->fillRoundRect(r.x, r.y, r.w, r.h, 8, pressed ? COL_BTN_DOWN : COL_BTN);
-    gfx->drawRoundRect(r.x, r.y, r.w, r.h, 8, COL_RULE);
-    text(label, r.x + r.w / 2, r.y + r.h / 2 - 8, ink, nullptr, 2, AL_CENTER);
+    gfx->fillRoundRect(r.x, r.y, r.w, r.h, 12, pressed ? COL_BTN_DOWN : COL_BTN);
+    text(label, r.x + r.w / 2, r.y + r.h / 2 - 7, ink, &FreeSans9pt7b, 1, AL_CENTER);
 }
-
 bool pressedIn(const Rect& r) { return touchWas && gest == Gest::BTN && gestBtn == &r; }
-
-// ── 라디오 페이지 ─────────────────────────────────────────────────
+void playIcon(int16_t x, int16_t y, bool paused, uint16_t color) {
+    if (paused) gfx->fillTriangle(x - 6, y - 10, x - 6, y + 10, x + 10, y, color);
+    else {
+        gfx->fillRoundRect(x - 9, y - 10, 6, 20, 2, color);
+        gfx->fillRoundRect(x + 3, y - 10, 6, 20, 2, color);
+    }
+}
+void skipButton(const Rect& r, bool next) {
+    gfx->fillRoundRect(r.x, r.y, r.w, r.h, 18, pressedIn(r) ? COL_BTN_DOWN : COL_BTN);
+    const int16_t x = r.x + r.w / 2, y = r.y + r.h / 2, d = next ? 1 : -1;
+    gfx->fillTriangle(x - d * 7, y - 8, x - d * 7, y + 8, x + d * 5, y, COL_INK);
+    gfx->fillRoundRect(x + d * 9 - 1, y - 8, 3, 16, 1, COL_INK);
+}
 void drawHeader(const UiState& s) {
-    text(s.hasTime ? (two(s.hour) + ":" + two(s.minute)) : String("--:--"), 8, 6, COL_INK,
-         nullptr, 2);
-
-    String line = stateText(s.state);
-    if (s.state == ST_PLAYING && s.bitrate > 0) {
-        line += "  " + String(s.bitrate / 1000) + "k";
-    } else if (!s.detail.isEmpty()) {
-        line += "  " + s.detail;
+    text(s.hasTime ? two(s.hour) + ":" + two(s.minute) : String("--:--"),
+         16, 12, COL_INK, &FreeSans9pt7b);
+    gfx->fillCircle(106, 20, 3, stateColor(s.state));
+    String status = stateText(s.state);
+    if (s.state == ST_PLAYING && s.bitrate) status += " / " + String(s.bitrate / 1000) + "k";
+    fitText(status, 116, 17, 216, stateColor(s.state), nullptr);
+    for (int i = 0; i < 4; ++i) {
+        const int h = 3 + i * 3;
+        gfx->fillRect(342 + i * 6, 26 - h, 3, h, s.wifi && i < s.wifiBars ? COL_DIM : COL_RULE);
     }
-    text(line, W / 2, 10, stateColor(s.state), nullptr, 1, AL_CENTER);
-
-    // Wi-Fi 막대 — 실제 RSSI
-    const int16_t wx = W - 128;
-    if (s.wifi) {
-        for (int i = 0; i < 4; i++) {
-            const int16_t h = 4 + i * 4;
-            gfx->fillRect(wx + i * 6, 22 - h, 4, h, i < s.wifiBars ? COL_INK : COL_RULE);
-        }
-    } else {
-        gfx->drawLine(wx, 6, wx + 18, 22, COL_NEEDLE);
-        gfx->drawLine(wx + 18, 6, wx, 22, COL_NEEDLE);
-    }
-
-    // 배터리. 셀이 없으면 USB 라고만 적는다.
-    const int16_t bx = W - 40;
     if (s.battery) {
-        gfx->drawRect(bx, 7, 30, 14, COL_DIM);
-        gfx->fillRect(bx + 30, 11, 3, 6, COL_DIM);
-        const int16_t fill = (int16_t)((int32_t)26 * s.battPercent / 100);
-        const uint16_t bc = s.charging ? COL_OK
-                            : (s.battPercent <= BATT_CUTOFF_PERCENT ? COL_NEEDLE : COL_INK);
-        if (fill > 0) gfx->fillRect(bx + 2, 9, fill, 10, bc);
-        text(String(s.battPercent) + "%", bx - 6, 6, COL_DIM, nullptr, 2, AL_RIGHT);
-    } else {
-        text(s.vbus ? "USB" : "NO BAT", W - 8, 6, COL_DIM, nullptr, 2, AL_RIGHT);
-    }
+        gfx->drawRoundRect(440, 14, 24, 12, 2, COL_DIM);
+        gfx->fillRect(464, 18, 2, 4, COL_DIM);
+        const int fill = 20 * (s.battPercent > 100 ? 100 : s.battPercent) / 100;
+        if (fill) gfx->fillRect(442, 16, fill, 8, s.charging ? COL_OK : COL_ACCENT);
+        text(String(s.battPercent) + "%", 432, 17, COL_DIM, nullptr, 1, AL_RIGHT);
+    } else text(s.vbus ? "USB POWER" : "NO BATTERY", 464, 17, COL_DIM, nullptr, 1, AL_RIGHT);
 }
-
 void drawDial(const UiState& s) {
-    gfx->drawFastHLine(DIAL_L, DIAL_Y, DIAL_R - DIAL_L, COL_RULE);
-
-    for (int f = 88; f <= 108; f++) {
-        const int16_t x = freqToX((float)f);
-        const bool major = (f % 5) == 0 || f == 88 || f == 108;
-        gfx->drawFastVLine(x, DIAL_Y - (major ? 12 : 6), major ? 12 : 6, COL_RULE);
-        if (major) text(String(f), x, DIAL_Y + 8, COL_DIM, nullptr, 1, AL_CENTER);
+    gfx->drawFastHLine(DIAL_L, DIAL_Y, DIAL_R - DIAL_L, COL_PAPER_RULE);
+    for (int half = 176; half <= 216; ++half) {
+        const int x = freqToX(half / 2.0f);
+        const bool major = half % 10 == 0 || half == 176 || half == 216;
+        const int h = major ? 12 : (half % 2 ? 4 : 7);
+        gfx->drawFastVLine(x, DIAL_Y - h, h, COL_PAPER_RULE);
+        if (major) text(String(half / 2), x, DIAL_Y + 7, COL_PAPER_DIM, nullptr, 1, AL_CENTER);
     }
-
-    // 채널 점. 현재 채널은 강조.
-    for (size_t i = 0; i < kStationCount; i++) {
-        const int16_t x = freqToX(kStations[i].freq);
-        gfx->fillCircle(x, DIAL_Y - 20, 3, i == s.index ? COL_ACCENT : COL_DIM);
-    }
-
-    // 바늘. 끌고 있으면 손가락을 따라간다.
-    const float f = dragging ? dragFreq : s.freq;
-    const int16_t nx = freqToX(f);
-    gfx->fillRect(nx - 1, NEEDLE_TOP, 3, DIAL_Y - NEEDLE_TOP, COL_NEEDLE);
-    gfx->fillTriangle(nx - 7, NEEDLE_TOP, nx + 7, NEEDLE_TOP, nx, NEEDLE_TOP + 12, COL_NEEDLE);
-
-    if (dragging) {
-        // 놓으면 어디로 갈지 미리 보여 준다.
-        const uint8_t n = nearestStation(dragFreq);
-        text(String(kStations[n].freq, 1) + "  " + kStations[n].name, W / 2, NAME_Y,
-             COL_ACCENT, nullptr, 2, AL_CENTER);
-    }
+    for (size_t i = 0; i < kStationCount; ++i)
+        gfx->fillCircle(freqToX(kStations[i].freq), 163, 1, COL_PAPER_DIM);
+    const int nx = freqToX(dragging ? dragFreq : s.freq);
+    gfx->fillRect(nx - 1, NEEDLE_TOP, 2, DIAL_Y - NEEDLE_TOP + 2, COL_NEEDLE);
+    gfx->fillTriangle(nx - 4, NEEDLE_TOP, nx + 4, NEEDLE_TOP, nx, NEEDLE_TOP + 5, COL_NEEDLE);
 }
-
 void drawVolume(const UiState& s) {
-    text("VOL", 24, VOL_Y - 2, COL_DIM, nullptr, 2);
-    gfx->fillRoundRect(VOL_L, VOL_Y, VOL_R - VOL_L, VOL_H, 6, COL_BTN);
+    gfx->fillRect(24, 226, 5, 9, COL_DIM);
+    gfx->fillTriangle(28, 226, 35, 220, 35, 241, COL_DIM);
     const uint8_t v = volDragging ? dragVol : s.volume;
-    const int16_t kx = VOL_L + (int16_t)((int32_t)(VOL_R - VOL_L) * v / (s.volumeMax ? s.volumeMax : 1));
-    if (kx > VOL_L) gfx->fillRoundRect(VOL_L, VOL_Y, kx - VOL_L, VOL_H, 6, v ? COL_INK : COL_BTN);
-    gfx->fillCircle(kx, VOL_Y + VOL_H / 2, 11, volDragging ? COL_ACCENT : COL_INK);
-    gfx->drawCircle(kx, VOL_Y + VOL_H / 2, 11, COL_BG);
+    text(String(v), 462, 223, COL_INK, &FreeSans9pt7b, 1, AL_RIGHT);
+    gfx->fillRoundRect(VOL_L, VOL_Y, VOL_R - VOL_L, VOL_H, 2, COL_RULE);
+    const int kx = VOL_L + int32_t(VOL_R - VOL_L) * v / (s.volumeMax ? s.volumeMax : 1);
+    if (kx > VOL_L) gfx->fillRoundRect(VOL_L, VOL_Y, kx - VOL_L, VOL_H, 2, COL_ACCENT);
+    gfx->fillCircle(kx, VOL_Y + VOL_H / 2, volDragging ? 9 : 7, COL_ACCENT);
+    gfx->fillCircle(kx, VOL_Y + VOL_H / 2, 2, COL_BG);
 }
-
 void renderRadio(const UiState& s) {
     drawHeader(s);
-    button(R_SOUND, "SOUND", pressedIn(R_SOUND), s.tone ? COL_ACCENT : COL_DIM);
-    button(R_SLEEP, s.sleepMinutes ? String((s.sleepSeconds + 59) / 60) + "m" : "SLEEP",
-           pressedIn(R_SLEEP), s.sleepMinutes ? COL_WARN : COL_DIM);
-
-    if (!dragging) {
-        char freq[8];
-        snprintf(freq, sizeof(freq), "%.1f", s.freq);
-        text(freq, W / 2 - 24, FREQ_Y - 34, COL_INK, &FreeSansBold24pt7b, 1, AL_CENTER);
-        text("MHz", W / 2 + 60, FREQ_Y - 16, COL_DIM, &FreeSans12pt7b, 1);
-        text(s.name.isEmpty() ? String("---") : s.name, W / 2, NAME_Y, COL_INK, nullptr, 2,
-             AL_CENTER);
-    }
-
+    gfx->fillRoundRect(12, 42, 456, 166, 16, COL_PAPER);
+    text("F M  /  INTERNET RADIO", 30, 56, COL_PAPER_DIM, nullptr);
+    gfx->fillRoundRect(R_SLEEP.x, R_SLEEP.y, R_SLEEP.w, R_SLEEP.h, 12,
+                       pressedIn(R_SLEEP) ? COL_PAPER_RULE : COL_PAPER);
+    text(s.sleepMinutes ? "SLEEP " + String((s.sleepSeconds + 59) / 60) + "m" : String("SLEEP OFF"),
+         451, 58, s.sleepMinutes ? COL_NEEDLE : COL_PAPER_DIM, nullptr, 1, AL_RIGHT);
+    const float frequency = dragging ? kStations[nearestStation(dragFreq)].freq : s.freq;
+    text(String(frequency, 1), 226, 78, COL_BG, &DialDigits, 1, AL_CENTER);
+    text("MHz", 354, 116, COL_PAPER_DIM, &FreeSans9pt7b);
+    const String name = dragging ? String(kStations[nearestStation(dragFreq)].name) : s.name;
+    const bool detail = !dragging && !s.detail.isEmpty() && s.state != ST_PLAYING && s.state != ST_PAUSED;
+    fitText(detail ? s.detail : name, W / 2, 141, 408,
+            detail ? COL_NEEDLE : COL_BG, &FreeSans9pt7b, AL_CENTER);
     drawDial(s);
     drawVolume(s);
-
-    button(R_PREV, "<<", pressedIn(R_PREV));
-    button(R_PLAY, s.paused ? ">" : "||", pressedIn(R_PLAY), s.paused ? COL_OK : COL_INK);
-    button(R_NEXT, ">>", pressedIn(R_NEXT));
-    button(R_MENU, "MENU", pressedIn(R_MENU));
+    skipButton(R_PREV, false);
+    skipButton(R_NEXT, true);
+    gfx->fillRoundRect(R_PLAY.x, R_PLAY.y, R_PLAY.w, R_PLAY.h, 22,
+                       pressedIn(R_PLAY) ? COL_PAPER : COL_ACCENT);
+    playIcon(R_PLAY.x + R_PLAY.w / 2, R_PLAY.y + R_PLAY.h / 2, s.paused, COL_BG);
+    for (int i = 0; i < 3; ++i) {
+        const int x = 43 + i * 8;
+        gfx->drawFastVLine(x, 267, 16, pressedIn(R_SOUND) ? COL_INK : COL_DIM);
+        gfx->fillCircle(x, 270 + (i == 1 ? 8 : 2), 2, s.tone ? COL_ACCENT : COL_DIM);
+    }
+    text("SOUND", 51, 296, pressedIn(R_SOUND) ? COL_INK : COL_DIM, nullptr, 1, AL_CENTER);
+    for (int i = 0; i < 3; ++i) {
+        gfx->fillCircle(419, 270 + i * 5, 1, COL_DIM);
+        gfx->drawFastHLine(425, 270 + i * 5, 17, pressedIn(R_MENU) ? COL_INK : COL_DIM);
+    }
+    text("STATIONS", 429, 296, pressedIn(R_MENU) ? COL_INK : COL_DIM, nullptr, 1, AL_CENTER);
 }
-
-// ── 음색/미터 페이지 ─────────────────────────────────────────────
 void drawMeter(const char* label, int16_t y, uint8_t level, uint8_t peak) {
-    text(label, 10, y, COL_DIM, nullptr, 1);
-    constexpr int16_t left = 28, width = 442;
-    gfx->fillRect(left, y, width, 10, COL_BTN);
-    const int16_t fill = int32_t(level) * width / 255;
-    if (fill) gfx->fillRect(left, y, fill, 10, level > 220 ? COL_WARN : COL_OK);
-    const int16_t px = left + int32_t(peak) * (width - 2) / 255;
-    if (peak) gfx->fillRect(px, y, 2, 10, COL_INK);
+    text(label, 16, y, COL_DIM, nullptr);
+    for (int i = 0; i < 44; ++i)
+        gfx->fillRect(34 + i * 10, y, 7, 6, level > i * 255 / 44 ? (i > 37 ? COL_WARN : COL_OK) : COL_RULE);
+    if (peak) gfx->fillRect(34 + int32_t(peak) * 437 / 255, y, 2, 6, COL_INK);
 }
-
 void renderSound(const UiState& s) {
-    text("SOUND", 8, 8, COL_INK, nullptr, 2);
-    text(String(s.freq, 1) + " MHz", 180, 10, COL_DIM, nullptr, 1);
-    button(R_BACK, "BACK", pressedIn(R_BACK));
-    for (uint8_t i = 0; i < kTonePresetCount; ++i)
-        button(R_TONES[i], kTonePresets[i].name, pressedIn(R_TONES[i]),
-               s.tone == i ? COL_ACCENT : COL_DIM);
+    text("Sound", 16, 16, COL_INK, &FreeSans12pt7b);
+    text(String(s.freq, 1) + " MHz", 154, 23, COL_DIM, nullptr);
+    button(R_BACK, "Back", pressedIn(R_BACK));
+    for (uint8_t i = 0; i < kTonePresetCount; ++i) {
+        const Rect& r = R_TONES[i];
+        const bool selected = s.tone == i;
+        gfx->fillRoundRect(r.x, r.y, r.w, r.h, 12,
+                           pressedIn(r) ? COL_BTN_DOWN : (selected ? COL_PAPER : COL_BTN));
+        text(kTonePresets[i].name, r.x + r.w / 2, r.y + 16,
+             selected && !pressedIn(r) ? COL_BG : COL_DIM, &FreeSans9pt7b, 1, AL_CENTER);
+    }
     const auto& tone = kTonePresets[s.tone < kTonePresetCount ? s.tone : 0];
-    text("BASS " + String(tone.bass) + "   MID " + String(tone.mid) +
-         "   TREBLE " + String(tone.treble) + " dB", W / 2, 100, COL_DIM, nullptr, 1, AL_CENTER);
-
-    // 라이브러리가 계산한 실제 PCM 신호(코덱 음량 적용 전). 정지/스톨이면 0.
-    drawMeter("L", 118, s.meters.left, s.meters.peakLeft);
-    drawMeter("R", 134, s.meters.right, s.meters.peakRight);
+    text("BASS " + String(tone.bass) + "   MID " + String(tone.mid) + "   TREBLE " + String(tone.treble) + " dB",
+         W / 2, 112, COL_DIM, nullptr, 1, AL_CENTER);
+    drawMeter("L", 128, s.meters.left, s.meters.peakLeft);
+    drawMeter("R", 140, s.meters.right, s.meters.peakRight);
+    gfx->fillRoundRect(12, 158, 456, 82, 10, COL_BTN);
+    for (int y = 171; y < 222; y += 17) gfx->drawFastHLine(24, y, 432, COL_RULE);
     for (uint8_t i = 0; i < kSpectrumBands; ++i) {
-        const int16_t x = 12 + i * 31;
-        const int16_t h = int32_t(s.meters.bands[i]) * 68 / 255;
-        gfx->fillRect(x, 154, 22, 68, COL_BTN);
-        if (h) gfx->fillRect(x, 222 - h, 22, h, COL_ACCENT);
+        const int x = 25 + i * 29, h = int32_t(s.meters.bands[i]) * 54 / 255;
+        if (h) gfx->fillRoundRect(x, 220 - h, 23, h, 2, COL_ACCENT);
     }
-    text("LOW", 12, 229, COL_DIM, nullptr, 1);
-    text("INPUT / BEFORE EQ + VOL", W / 2, 229, COL_DIM, nullptr, 1, AL_CENTER);
-    text("HIGH", W - 12, 229, COL_DIM, nullptr, 1, AL_RIGHT);
-    String sleep = "SLEEP OFF";
-    if (s.sleepMinutes) sleep = "SLEEP " + String(s.sleepSeconds / 60) + ":" + two(s.sleepSeconds % 60);
-    button(R_SOUND_SLEEP, sleep, pressedIn(R_SOUND_SLEEP), s.sleepMinutes ? COL_WARN : COL_INK);
-    button(R_SOUND_PLAY, s.paused ? "PLAY" : "PAUSE", pressedIn(R_SOUND_PLAY));
+    text("LOW", 24, 228, COL_DIM, nullptr);
+    text("INPUT / BEFORE EQ + VOL", W / 2, 228, COL_DIM, nullptr, 1, AL_CENTER);
+    text("HIGH", 456, 228, COL_DIM, nullptr, 1, AL_RIGHT);
+    String sleep = "Sleep timer off";
+    if (s.sleepMinutes) sleep = "Sleep  " + String(s.sleepSeconds / 60) + ":" + two(s.sleepSeconds % 60);
+    button(R_SOUND_SLEEP, sleep, pressedIn(R_SOUND_SLEEP), s.sleepMinutes ? COL_ACCENT : COL_INK);
+    button(R_SOUND_PLAY, s.paused ? "Resume" : "Pause", pressedIn(R_SOUND_PLAY), COL_ACCENT);
 }
-
-// ── 메뉴 페이지 ───────────────────────────────────────────────────
 void renderMenu(const UiState& s) {
-    text("STATIONS", 8, 8, COL_INK, nullptr, 2);
-    button(R_BACK, "BACK", pressedIn(R_BACK));
-
-    for (size_t i = 0; i < kStationCount; i++) {
-        const int16_t col = (int16_t)(i % COLS), row = (int16_t)(i / COLS);
-        const int16_t x = GRID_X + col * (CELL_W + GAP);
-        const int16_t y = GRID_Y + row * (CELL_H + GAP);
-        const bool cur = (i == s.index);
+    text("Stations", 16, 16, COL_INK, &FreeSans12pt7b);
+    text("15 LIVE CHANNELS", 154, 23, COL_DIM, nullptr);
+    button(R_BACK, "Back", pressedIn(R_BACK));
+    for (size_t i = 0; i < kStationCount; ++i) {
+        const int x = GRID_X + (i % COLS) * (CELL_W + GAP);
+        const int y = GRID_Y + (i / COLS) * (CELL_H + GAP);
+        const bool cur = i == s.index;
         const bool down = touchWas && gest == Gest::BTN && gestCell == (int8_t)i;
-        gfx->fillRoundRect(x, y, CELL_W, CELL_H, 6, down ? COL_BTN_DOWN : COL_BTN);
-        gfx->drawRoundRect(x, y, CELL_W, CELL_H, 6, cur ? COL_ACCENT : COL_RULE);
-        text(String(kStations[i].freq, 1), x + CELL_W / 2, y + 10, cur ? COL_ACCENT : COL_INK,
-             nullptr, 2, AL_CENTER);
-        text(kStations[i].name, x + CELL_W / 2, y + 40, COL_DIM, nullptr, 1, AL_CENTER);
+        const uint16_t ink = cur && !down ? COL_BG : COL_INK;
+        const uint16_t dim = cur && !down ? COL_PAPER_DIM : COL_DIM;
+        gfx->fillRoundRect(x, y, CELL_W, CELL_H, 10, down ? COL_BTN_DOWN : (cur ? COL_PAPER : COL_BTN));
+        text(String(kStations[i].freq, 1), x + CELL_W / 2, y + 9, ink, &FreeSansBold12pt7b, 1, AL_CENTER);
+        char label[32];
+        snprintf(label, sizeof(label), "%s", kStations[i].name);
+        const size_t len = strlen(label);
+        if (len >= 3 && strcmp(label + len - 3, " FM") == 0) label[len - 3] = '\0';
+        fitText(label, x + CELL_W / 2, y + 37, CELL_W - 8, dim, nullptr, AL_CENTER);
+        if (cur) gfx->fillCircle(x + CELL_W - 8, y + 8, 2, COL_NEEDLE);
     }
-
-    button(R_WIFI, "WI-FI", pressedIn(R_WIFI));
-    button(R_SCREENOFF, "SCREEN OFF", pressedIn(R_SCREENOFF));
-    button(R_POWER, "POWER OFF", pressedIn(R_POWER), COL_NEEDLE);
+    button(R_WIFI, "Wi-Fi setup", pressedIn(R_WIFI));
+    button(R_SCREENOFF, "Screen off", pressedIn(R_SCREENOFF));
+    button(R_POWER, "Power off", pressedIn(R_POWER), COL_WARN);
 }
 
 }  // namespace
@@ -471,15 +478,17 @@ void uiRenderWifiSetup(const UiState& s) {
     uiWake();
     gfx->fillScreen(COL_BG);
 
-    text("WI-FI SETUP", 12, 12, COL_NEEDLE, nullptr, 3);
-    text("1. Join this Wi-Fi", 12, 60, COL_DIM, nullptr, 2);
-    text(s.apSsid, 36, 88, COL_INK, nullptr, 3);
-    text("password  " + s.apPass, 36, 120, COL_DIM, nullptr, 2);
-    text("2. Open in a browser", 12, 160, COL_DIM, nullptr, 2);
-    text(s.apUrl, 36, 188, COL_INK, nullptr, 3);
-    text("3. Enter your SSID / password", 12, 228, COL_DIM, nullptr, 2);
-    if (s.detail.length()) text("last: " + s.detail, 12, 268, COL_DIM, nullptr, 2);
-    text("2.4GHz only - 5 min timeout", 12, 296, COL_DIM, nullptr, 2);
+    text("Connect your radio", 20, 20, COL_INK, &FreeSans12pt7b);
+    text("WI-FI SETUP  /  2.4 GHz", 20, 54, COL_ACCENT, nullptr);
+    gfx->fillRoundRect(12, 80, 456, 106, 14, COL_PAPER);
+    text("01  JOIN THIS NETWORK", 28, 94, COL_PAPER_DIM, nullptr);
+    fitText(s.apSsid, 28, 114, 420, COL_BG, &FreeSans12pt7b);
+    fitText("Password: " + s.apPass, 28, 154, 420, COL_PAPER_DIM, &FreeSans9pt7b);
+    text("02  OPEN IN YOUR BROWSER", 28, 202, COL_DIM, nullptr);
+    fitText(s.apUrl, 28, 222, 420, COL_INK, &FreeSans12pt7b);
+    text("03  ENTER YOUR HOME WI-FI DETAILS", 28, 266, COL_DIM, nullptr);
+    fitText(s.detail.isEmpty() ? String("Setup closes after 5 minutes") : s.detail,
+            28, 297, 420, COL_DIM, nullptr);
 
     gfx->flush();
     uiUnlock();

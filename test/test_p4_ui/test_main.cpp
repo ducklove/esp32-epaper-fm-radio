@@ -22,10 +22,10 @@ static UiEvent tap(int16_t x, int16_t y) {
 }
 
 static void sound_presets_and_sleep_are_reachable() {
-    TEST_ASSERT_EQUAL(int(UiAction::NONE), int(tap(50, 65).action));
+    TEST_ASSERT_EQUAL(int(UiAction::NONE), int(tap(50, 280).action));
     TEST_ASSERT_TRUE(uiShowsMeters());
     for (int i = 0; i < 4; ++i) {
-        const auto ev = tap(60 + 118 * i, 65);
+        const auto ev = tap(60 + 116 * i, 65);
         TEST_ASSERT_EQUAL(int(UiAction::TONE), int(ev.action));
         TEST_ASSERT_EQUAL(i, ev.value);
     }
@@ -46,7 +46,7 @@ static void wake_touch_does_not_change_playback() {
 }
 
 static void dragging_outside_button_cancels_it() {
-    tap(50, 65);
+    tap(50, 280);
     TouchPoint p{60, 65};
     uiHandleTouch(&p, 1, state);
     p = {200, 160};
@@ -68,16 +68,21 @@ static void existing_station_grid_and_volume_still_work() {
     auto ev = tap(430, 190);
     TEST_ASSERT_EQUAL(int(UiAction::TUNE), int(ev.action));
     TEST_ASSERT_EQUAL(14, ev.value);
-    ev = tap(456, 218);
+    ev = tap(430, 230);
     TEST_ASSERT_EQUAL(int(UiAction::VOLUME), int(ev.action));
     TEST_ASSERT_EQUAL(20, ev.value);
-    TEST_ASSERT_EQUAL(int(UiAction::PREV), int(tap(50, 275).action));
+    TEST_ASSERT_EQUAL(int(UiAction::PREV), int(tap(130, 280).action));
+    TEST_ASSERT_EQUAL(int(UiAction::NEXT), int(tap(340, 280).action));
+    TEST_ASSERT_EQUAL(int(UiAction::TOGGLE_PAUSE), int(tap(235, 280).action));
+    ev = tap(140, 180); // 새 눈금에서 93.1 MHz 채널을 선택한다.
+    TEST_ASSERT_EQUAL(int(UiAction::TUNE), int(ev.action));
+    TEST_ASSERT_EQUAL(2, ev.value);
 }
 
 static void spi_transfer_leaves_touch_unlocked_and_dirty() {
     testOnFlush = []() {
         TEST_ASSERT_EQUAL(0, uiMutex->depth);
-        tap(50, 65); // 전송 도중 들어온 페이지 전환을 다음 프레임에 반영해야 한다.
+        tap(50, 280); // 전송 도중 들어온 페이지 전환을 다음 프레임에 반영해야 한다.
     };
     uiRender(state);
     testOnFlush = nullptr;

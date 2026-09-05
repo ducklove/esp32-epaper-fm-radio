@@ -81,6 +81,12 @@ void hwSpeakerAmp(bool on) {
 
 void hwBacklight(uint8_t percent) {
     if (percent > 100) percent = 100;
-    if (!blAttached) blAttached = ledcAttach(PIN_LCD_BL, 5000, 10);
-    if (blAttached) ledcWrite(PIN_LCD_BL, (uint32_t)1023 * percent / 100);
+    if (!blAttached) {
+        blAttached = ledcAttach(PIN_LCD_BL, 5000, 10);
+        RLOGI("백라이트 PWM attach %s (GPIO%d)", blAttached ? "OK" : "실패", (int)PIN_LCD_BL);
+    }
+    if (blAttached) {
+        const bool ok = ledcWrite(PIN_LCD_BL, (uint32_t)1023 * percent / 100);
+        if (!ok) RLOGE("백라이트 ledcWrite 실패 (%u%%)", (unsigned)percent);
+    }
 }

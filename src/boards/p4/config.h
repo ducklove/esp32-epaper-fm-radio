@@ -25,6 +25,15 @@ constexpr int8_t PIN_LCD_BL   = 28;   // PWM
 
 constexpr uint32_t LCD_SPI_HZ = 80000000;
 
+// 화면을 미는 SPI 버스 구현. 셋 다 Arduino_GFX 안에 있고 핀은 같다.
+//   1  Arduino_ESP32SPIDMA  IDF spi_master + DMA. 전송 37ms 로 찍히지만 이 보드
+//                           에서는 패널에 아무것도 그려지지 않았다.
+//   2  Arduino_ESP32SPI     레지스터 직접 제어. 한 장 47ms, 실제로 그려진다. ★
+//   3  Arduino_HWSPI        Arduino SPI 객체 경유. 벤더 예제. 그려지지만 2.5초.
+// 부팅 직후 빨강·초록·파랑 자가 진단이 보이지 않으면 버스가 패널을 못 잡는
+// 것이니 번호를 바꿔 본다.
+#define LCD_BUS 2
+
 // 벤더는 세로(320x480)로 회전 4 를 쓴다. Arduino_GFX 에서 4~7 은 0~3 에 화면
 // 가로 반전을 더한 것이라, 처음엔 "이 패널은 반전이 필요하다"고 보고 가로도
 // 5(=1+반전)로 잡았다. 실물에서는 거울상으로 보였다 — 세로에서 필요한 반전이

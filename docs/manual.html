@@ -783,8 +783,8 @@
         </div>
         <div class="card">
           <p class="k">한 장 전송</p>
-          <p class="v">37 ms</p>
-          <p class="n">DMA 버스. Arduino SPI 경유는 2,500 ms 였다</p>
+          <p class="v">47 ms</p>
+          <p class="n">레지스터 버스. Arduino SPI 경유는 2,500 ms 였다</p>
         </div>
       </div>
 
@@ -866,7 +866,9 @@
 [I] ES8311 발견: 0x18
 [I] 선국: KBS Classic FM (93.1 MHz)
 [A/bitrate (b/s)] 201981
-[I] ... 화면 55장 그리기 6/6ms 전송 37/37ms</code></pre>
+[I] LCD 초기화 OK (버스 ESP32SPI, 80000000 Hz, 회전 1)
+[I] 자가 진단 색 0xF800 (48 ms)
+[I] ... 화면 55장 그리기 6/6ms 전송 47/47ms</code></pre>
     </section>
 
     <!-- ─────────────────────────────────────────────────────────── -->
@@ -1179,13 +1181,20 @@ pio run -e epaper-ota -t upload          # ePaper 판, 무선</code></pre>
       <p>
         벤더 예제대로 <code>Arduino_HWSPI</code> 를 쓰니 480×320 한 장에
         <strong>2.5초</strong>가 걸렸다. 청크를 128배 키워도 그대로라 Arduino SPI
-        HAL 자체가 병목이다. IDF 드라이버와 DMA 를 직접 쓰는
-        <code>Arduino_ESP32SPIDMA</code> 로 37ms. 다만 이 버스는 P4 에서 버스
-        번호를 "호스트 + 1" 로 넘겨야 하고, 기본값이면 초기화가 죽는다.
+        HAL 자체가 병목이다. 레지스터를 직접 만지는 <code>Arduino_ESP32SPI</code>
+        로 47ms. 재기 전에는 "터치가 느리다"로 보였다 — 렌더 시간을 그리기와
+        전송으로 나눠 로그에 찍은 뒤에야 그리기 7ms · 전송 2,500ms 로 갈렸다.
       </p>
+
+      <h3>전송이 빠르다고 그려지는 게 아니다</h3>
       <p>
-        재기 전에는 "터치가 느리다"로 보였다. 렌더 시간을 그리기와 전송으로 나눠
-        로그에 찍은 뒤에야 그리기 7ms · 전송 2,500ms 로 갈렸다.
+        먼저 시도한 DMA 버스(<code>Arduino_ESP32SPIDMA</code>)는 37ms 로 찍히면서
+        패널에 아무것도 그리지 않았다. 백라이트만 켜진 검은 화면. 로그는 전부
+        정상이라고 했고, 그 상태로 하루를 "잠에서 안 깨어난다"고 착각했다.
+        화면은 읽어 볼 길이 없으니(MISO 없음) 부팅 때 빨강·초록·파랑을 채우는
+        자가 진단을 넣어 눈에 맡긴다. 버스 번호 규칙도 구현마다 다르다 —
+        <code>Arduino_ESP32SPI</code> 는 <code>FSPI</code>(=0)가 SPI2 이고, DMA
+        버스는 "호스트 + 1" 이다.
       </p>
 
       <h3>구형 ESP-Hosted 슬레이브는 RPC 가 막힌다</h3>

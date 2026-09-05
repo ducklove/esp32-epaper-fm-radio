@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "hw.h"
+#include "log.h"
 #include "stations.h"
 
 namespace {
@@ -69,16 +70,19 @@ constexpr Rect R_POWER{324, 244, 148, 62};
 // 깜빡임 없이 그리려고 PSRAM 캔버스(480x320x2 = 300KB)에 그린 뒤 통째로
 // 밀어 넣는다.
 //
-// 버스는 Arduino_ESP32SPIDMA 다. 벤더 예제의 Arduino_HWSPI(Arduino SPI 객체
-// 경유)는 P4 에서 한 장에 2.5초가 걸렸다 — 그리기 7ms, 전송 2,500ms. 청크를
-// 32픽셀에서 4096픽셀로 키워도 그대로라 Arduino SPI HAL 자체가 P4 에서 느린
-// 것이다. IDF spi_master + DMA 를 직접 쓰는 이 버스로 바꿔서 잰 값은 상태
-// 로그(화면 N장 그리기/전송)에 찍힌다.
+// 버스는 Arduino_ESP32SPI(레지스터 직접 제어)다. 셋을 다 실물에서 겪었다.
 //
-// spi_num 은 P4 에서 "호스트 번호 + 1" 이다(라이브러리가 C3/S3 만 그대로 쓰고
-// 나머지는 1 을 뺀다). SPI2_HOST(=1)를 쓰려면 2 를 넘긴다. 기본값 FSPI(=0)를
-// 그대로 두면 호스트 -1 이 되어 초기화가 죽는다 — 벤더가 이 버스를 피한
-// 이유가 이것일 것이다.
+//   Arduino_HWSPI      벤더 예제. Arduino SPI 객체 경유. 한 장 2,500ms — 그리기
+//                      7ms 에 전송 2,500ms. 청크를 32픽셀에서 4096픽셀로 키워도
+//                      그대로라 Arduino SPI HAL 자체가 P4 에서 느리다.
+//   Arduino_ESP32SPIDMA IDF spi_master + DMA. 전송 37ms 로 찍히지만 패널에는
+//                      아무것도 그려지지 않는다(백라이트만 켜진 검은 화면).
+//                      초기화 명령이 패널에 닿지 않는 것으로 보이는데 원인은
+//                      못 잡았다. spi_num 규칙도 다르다(호스트 번호 + 1).
+//   Arduino_ESP32SPI   한 장 47ms 이고 실제로 그려진다. P4 분기가 명시돼 있다.
+//                      spi_num 은 Arduino 식 FSPI(=0)가 SPI2 다.
+//
+// 값은 상태 로그(화면 N장 그리기/전송)에 찍힌다. config.h 의 LCD_BUS 로 바꾼다.
 Arduino_DataBus* bus = nullptr;
 Arduino_GFX*     panel = nullptr;
 Arduino_Canvas*  gfx = nullptr;
@@ -347,18 +351,44 @@ UiTiming uiTakeTiming() {
 void uiBegin() {
     uiMutex = xSemaphoreCreateMutex();
     hwBacklight(0);
+#if LCD_BUS == 1
     bus = new Arduino_ESP32SPIDMA(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK, PIN_LCD_MOSI,
                                   GFX_NOT_DEFINED, 2 /* SPI2_HOST + 1 */, false);
+    const char* busName = "ESP32SPIDMA";
+#elif LCD_BUS == 2
+    // 이쪽은 버스 번호 규칙이 다르다. Arduino 식 FSPI(=0)가 P4 의 SPI2 다.
+    bus = new Arduino_ESP32SPI(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK, PIN_LCD_MOSI,
+                               GFX_NOT_DEFINED, FSPI, false);
+    const char* busName = "ESP32SPI";
+#else
+    bus = new Arduino_HWSPI(PIN_LCD_DC, PIN_LCD_CS, PIN_LCD_SCK, PIN_LCD_MOSI, GFX_NOT_DEFINED,
+                            &SPI, false);
+    const char* busName = "HWSPI";
+#endif
     panel = new Arduino_ST7796(bus, PIN_LCD_RST, LCD_ROTATION, true /* IPS */, 320, 480);
     gfx = new Arduino_Canvas(W, H, panel);
-    gfx->begin(LCD_SPI_HZ);
-    gfx->fillScreen(COL_BG);
-    gfx->flush();
+    const bool ok = gfx->begin(LCD_SPI_HZ);
+    RLOGI("LCD 초기화 %s (버스 %s, %lu Hz, 회전 %u)", ok ? "OK" : "실패", busName,
+          (unsigned long)LCD_SPI_HZ, (unsigned)LCD_ROTATION);
 
     screenOn = true;
     curBright = SCREEN_BRIGHT;
     lastWakeMs = millis();
     hwBacklight(SCREEN_BRIGHT);
+
+    // 자가 진단. 버스가 패널을 실제로 구동하는지는 읽어 볼 길이 없다(MISO 없음).
+    // 빨강·초록·파랑을 차례로 채워서 눈으로 판정한다 — 셋이 보이면 버스와
+    // 백라이트가 다 산 것이고, 검으면 버스, 희면 데이터 경로가 문제다.
+    const uint16_t bars[] = {0xF800, 0x07E0, 0x001F};
+    for (uint16_t c : bars) {
+        const uint32_t t0 = millis();
+        gfx->fillScreen(c);
+        gfx->flush();
+        RLOGI("자가 진단 색 0x%04X (%lu ms)", c, (unsigned long)(millis() - t0));
+        delay(350);
+    }
+    gfx->fillScreen(COL_BG);
+    gfx->flush();
 }
 
 void uiRender(const UiState& s) {

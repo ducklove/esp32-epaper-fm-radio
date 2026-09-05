@@ -25,6 +25,7 @@
 #include "hw.h"
 #include "log.h"
 #include "listening.h"
+#include "networkhealth.h"
 #include "secrets.h"
 #include "stations.h"
 #include "touch.h"
@@ -56,6 +57,10 @@ static Audio  audio;
 static ES8311 codec;
 static TaskHandle_t audioTaskHandle = nullptr;
 static std::atomic<bool> wantMeters{false};
+static std::atomic<uint32_t> lastPcmMs{0};
+static std::atomic<uint32_t> audioWorkerMs{0};
+static NetworkHealth networkHealth;
+static bool networkRestartNeeded = false; // loop만 접근한다.
 
 struct Shared : ListeningSettings {
     PlayState state = ST_BOOT;
@@ -83,6 +88,7 @@ static inline void unlockShared() { xSemaphoreGive(sharedLock); }
 // 라이브러리의 PCM 처리 경계에서 EQ 계수를 갱신한다. loop 태스크에서
 // setTone() 을 호출하면 별도 디코더 태스크가 읽는 계수를 동시에 덮어쓸 수 있다.
 void p4ProcessAudioFrame() {
+    lastPcmMs.store(millis(), std::memory_order_relaxed);
     const bool meters = wantMeters.load(std::memory_order_relaxed);
     audio.settings.VU_LEVEL = meters;
     audio.settings.SPECTRUM = meters;
@@ -222,6 +228,7 @@ static void tune(uint8_t index) {
     const Station& st = kStations[index];
 
     audio.stopSong();
+    lastPcmMs.store(0, std::memory_order_relaxed);
     lockShared();
     shared.meters = {};
     shared.bitrate = 0;
@@ -271,7 +278,6 @@ static void resumeAudio(uint8_t idx) {
 }
 
 static void audioTask(void*) {
-    uint32_t codecRate = AUDIO_SAMPLE_RATE;
     uint32_t lastRetryMs = millis();
     uint32_t bufferingSince = 0;
     ListeningSettings applied;
@@ -279,6 +285,7 @@ static void audioTask(void*) {
     bool initialized = false;
 
     for (;;) {
+        audioWorkerMs.store(millis(), std::memory_order_relaxed);
         tickSleepTimer();
         lockShared();
         const ListeningSettings desired = shared;
@@ -326,26 +333,16 @@ static void audioTask(void*) {
 
         audio.loop();
 
-        const uint32_t rate = audio.getSampleRate();
-        if (rate != 0 && rate != codecRate) {
-            if (codec.setSampleRate(rate, AUDIO_MCLK_DIV)) {
-                RLOGI("샘플레이트 변경: %u -> %u Hz", codecRate, rate);
-                codecRate = rate;
-            }
-        }
-
-        // 라이브러리 4.0 은 connecttohost() 가 바로 true 를 돌려주고 실제 접속은
-        // loop() 안에서 한다. 거기서 실패하면(DNS, TLS, 소켓) 로그만 남기고 멈춘다
-        // — 상태는 BUFFERING 인 채로. ERROR 에서만 재시도하던 상태 머신은 그
-        // 자리에서 영원히 기다렸다(P4 에서 국악FM DNS 실패로 6분간 무반응).
-        // 버퍼링이 이만큼 지나도 재생이 시작되지 않으면 오류로 쳐서 다시 붙는다.
-        // 재생 중 끊겨 BUFFERING 으로 돌아간 경우도 같은 길을 탄다.
+        // isRunning()은 소켓 연결 직후에도 true다. 실제 디코딩된 PCM으로 재생을
+        // 판정해야 데이터가 끊겼을 때 ON AIR에 머물지 않고 스톨 복구로 들어간다.
         constexpr uint32_t kStallMs = 45000;
         bool stalled = false;
+        const uint32_t pcmAt = lastPcmMs.load(std::memory_order_relaxed);
+        const bool receivingAudio = pcmAt && millis() - pcmAt < 1500 && audio.isRunning();
 
         lockShared();
-        if (shared.state == ST_BUFFERING && audio.isRunning()) shared.state = ST_PLAYING;
-        else if (shared.state == ST_PLAYING && !audio.isRunning()) shared.state = ST_BUFFERING;
+        if (shared.state == ST_BUFFERING && receivingAudio) shared.state = ST_PLAYING;
+        else if (shared.state == ST_PLAYING && !receivingAudio) shared.state = ST_BUFFERING;
         if (shared.state == ST_BUFFERING) {
             if (!bufferingSince) bufferingSince = millis();
             else if (millis() - bufferingSince > kStallMs) {
@@ -367,9 +364,10 @@ static void audioTask(void*) {
 
         if (st == ST_ERROR && WiFi.status() == WL_CONNECTED) {
             if (millis() - lastRetryMs > kRetryDelayMs) {
-                lastRetryMs = millis();
                 bufferingSince = 0;
                 tune(idx);
+                // DNS/TCP 실패 자체가 8초 이상 걸려도 즉시 재시도하지 않는다.
+                lastRetryMs = millis();
             }
         } else if (st != ST_ERROR) {
             lastRetryMs = millis();
@@ -440,7 +438,15 @@ static void pollSlowStatus() {
     shared.wifiRssi = rssi;
     shared.wifiBars = up ? rssiToBars(rssi) : 0;
     shared.power = pw;
+    const bool playbackBlocked = !shared.paused && !shared.maintenance &&
+        (shared.state == ST_TUNING || shared.state == ST_BUFFERING || shared.state == ST_ERROR);
     unlockShared();
+    networkRestartNeeded = networkHealth.observe(up, rssi, playbackBlocked);
+    const uint32_t workerAt = audioWorkerMs.load(std::memory_order_relaxed);
+    if (audioWorkerStalled(millis(), workerAt, lastPcmMs.load(std::memory_order_relaxed))) {
+        RLOGE("오디오 태스크가 90초 이상 반환하지 않고 PCM도 중단됨");
+        networkRestartNeeded = true;
+    }
 
     const uint32_t bufSize = audio.getInBufferSize();
     const uint32_t bufPct = bufSize ? (audio.inBufferFilled() * 100 / bufSize) : 0;
@@ -454,6 +460,13 @@ static void pollSlowStatus() {
           (int)rssi, (unsigned)bufPct, (unsigned)(bufSize / 1024), (unsigned)ESP.getFreeHeap(),
           (unsigned long)(millis() / 60000), (unsigned)ut.frames, (unsigned)ut.drawAvg,
           (unsigned)ut.drawMax, (unsigned)ut.flushAvg, (unsigned)ut.flushMax);
+    const uint32_t pcmAt = lastPcmMs.load(std::memory_order_relaxed);
+    lockShared();
+    const unsigned state = shared.state, station = shared.index;
+    unlockShared();
+    RLOGI("PCM 수신 %s (마지막 %lu ms 전), 작업 응답 %lu ms 전, 상태 %u, 채널 %u",
+          pcmAt ? "있음" : "없음", (unsigned long)(pcmAt ? millis() - pcmAt : 0),
+          (unsigned long)(workerAt ? millis() - workerAt : 0), state, station);
 }
 
 // ── 터치 태스크 ───────────────────────────────────────────────────
@@ -612,6 +625,7 @@ static bool connectWifi(uint8_t attempts) {
         }
         if (WiFi.status() == WL_CONNECTED) {
             RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
+            networkHealth.observe(true, WiFi.RSSI(), false);
             return true;
         }
         RLOGE("Wi-Fi 접속 실패 (status=%d)", (int)WiFi.status());
@@ -750,6 +764,8 @@ void setup() {
     audio.setVolumeSteps(21);
     audio.setVolume(21);  // 라이브러리는 풀스케일, 실제 음량은 코덱이 담당
     audio.setConnectionTimeout(8000, 12000);
+    // 방송 입력 주파수와 무관하게 I2S/코덱 출력 클록을 48kHz로 유지한다.
+    audio.setOutputSampleRate(Audio::SR_48000);
 
     RLOGI("ES8311 초기화 중...");
     if (!codec.begin(PIN_I2C_SDA, PIN_I2C_SCL, AUDIO_SAMPLE_RATE, AUDIO_BITS,
@@ -945,6 +961,20 @@ void loop() {
     if (millis() - lastStatusMs > kStatusPeriodMs) {
         lastStatusMs = millis();
         pollSlowStatus();
+
+        if (networkRestartNeeded) {
+            RLOGE("C6 응답과 재생이 연속으로 끊김 — 연결 상태가 남아 있어도 재시작");
+            // 기존 부팅 경로가 C6를 함께 리셋한다. 설정과 취침 상태를 먼저 저장한다.
+            // 정체된 오디오 태스크를 기다리지 않고 새 명령을 차단한 뒤 리셋한다.
+            lockShared(); shared.maintenance = true; ++shared.maintenanceRevision; unlockShared();
+            setState(ST_ERROR, "NETWORK RECOVERY");
+            uiWake();
+            uiRender(snapshotUi());
+            savePrefs();
+            Serial.flush();
+            delay(300);
+            ESP.restart();
+        }
 
         // 배터리 컷오프. 외부 전원이 들어오면 지킬 일이 없다.
         static uint8_t strikes = 0;

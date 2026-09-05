@@ -94,6 +94,37 @@ static void tone_and_volume_do_not_reconnect_stream() {
     TEST_ASSERT_EQUAL(int(PlaybackChange::VOLUME), int(listeningChange(desired, applied, true, 0, 0)));
 }
 
+#include "networkhealth.h"
+
+static void stale_connected_c6_recovers_after_two_failed_checks() {
+    NetworkHealth health;
+    TEST_ASSERT_FALSE(health.observe(true, -63, false));
+    TEST_ASSERT_FALSE(health.observe(true, 0, true));
+    TEST_ASSERT_TRUE(health.observe(true, 0, true));
+}
+
+static void station_outage_and_unsupported_rssi_do_not_restart() {
+    NetworkHealth health;
+    for (int i = 0; i < 10; ++i) TEST_ASSERT_FALSE(health.observe(true, 0, true));
+    for (int i = 0; i < 10; ++i) TEST_ASSERT_FALSE(health.observe(true, -63, true));
+    TEST_ASSERT_FALSE(health.observe(true, 0, true));
+    TEST_ASSERT_FALSE(health.observe(true, -63, true));
+    TEST_ASSERT_FALSE(health.observe(true, 0, true));
+    TEST_ASSERT_FALSE(health.observe(true, 0, false)); // 정지 또는 재생 복구 시 누적 취소.
+    TEST_ASSERT_FALSE(health.observe(true, 0, true));
+    TEST_ASSERT_FALSE(health.observe(false, 0, true));
+    TEST_ASSERT_FALSE(health.observe(true, 0, true));
+}
+
+static void blocked_audio_worker_recovers_without_false_restarts() {
+    TEST_ASSERT_FALSE(audioWorkerStalled(200000, 0, 0));
+    TEST_ASSERT_FALSE(audioWorkerStalled(91000, 1001, 0));
+    TEST_ASSERT_TRUE(audioWorkerStalled(91000, 1000, 0));
+    TEST_ASSERT_FALSE(audioWorkerStalled(91000, 1000, 90000));
+    TEST_ASSERT_FALSE(audioWorkerStalled(200000, 199999, 0));
+    TEST_ASSERT_TRUE(audioWorkerStalled(89000, UINT32_MAX - 1000, 0));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(sleep_expires_once_at_deadline);
@@ -104,5 +135,8 @@ int main() {
     RUN_TEST(restored_pause_never_autoplays);
     RUN_TEST(coalesced_pause_resume_restarts_cancelled_tune);
     RUN_TEST(tone_and_volume_do_not_reconnect_stream);
+    RUN_TEST(stale_connected_c6_recovers_after_two_failed_checks);
+    RUN_TEST(station_outage_and_unsupported_rssi_do_not_restart);
+    RUN_TEST(blocked_audio_worker_recovers_without_false_restarts);
     return UNITY_END();
 }

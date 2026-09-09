@@ -11,6 +11,7 @@
 struct WifiCreds {
     String ssid;
     String pass;
+    bool fromNvs = false;
 };
 
 // NVS 에 저장된 값. 없으면 secrets.h 의 값을 돌려준다.

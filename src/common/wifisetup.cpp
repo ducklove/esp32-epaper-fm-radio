@@ -95,6 +95,7 @@ WifiCreds wifiLoadCreds() {
         c.ssid = p.getString(kKeySsid, "");
         c.pass = p.getString(kKeyPass, "");
         p.end();
+        c.fromNvs = !c.ssid.isEmpty();
     }
     // 저장된 게 없으면 펌웨어에 박아 둔 초기값을 쓴다.
     if (c.ssid.isEmpty()) {

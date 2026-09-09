@@ -440,6 +440,7 @@ static String wifiReasonText() {
         case 15:  what = " handshake"; break;
         case 201: what = " no AP"; break;
         case 202: what = " auth fail"; break;
+        case 204: what = " handshake"; break;
         case 205: what = " conn fail"; break;
         default:  break;
     }
@@ -451,12 +452,35 @@ static bool wifiRecovery = false;
 
 static bool connectWifi(uint8_t attempts) {
     const WifiCreds c = wifiLoadCreds();
+    RLOGI("Wi-Fi 설정 출처: %s, SSID=%s", c.fromNvs ? "NVS" : "펌웨어 기본값",
+          c.ssid.c_str());
 
     static bool hooked = false;
     if (!hooked) {
         hooked = true;
         WiFi.onEvent(onWifiEvent);
     }
+
+    // 접속 전 검색으로 신호 문제와 인증 실패를 구분한다. 재생 중에는 호출하지 않는다.
+    // 이웃의 SSID와 비밀번호는 기록하지 않는다.
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect();
+    delay(100);
+    const int16_t found = WiFi.scanNetworks(false, true);
+    uint16_t matches = 0;
+    for (int16_t i = 0; i < found; ++i) {
+        if (WiFi.SSID(i) != c.ssid) continue;
+        ++matches;
+        RLOGI("대상 AP 발견: RSSI=%ld dBm, 채널=%ld, 보안=%u",
+              (long)WiFi.RSSI(i), (long)WiFi.channel(i), (unsigned)WiFi.encryptionType(i));
+    }
+    if (found < 0) {
+        RLOGE("Wi-Fi 검색 실패: %d", (int)found);
+    } else if (!matches) {
+        RLOGI("대상 AP 검색 안 됨 (주변 AP %d개) — 숨김 SSID도 접속은 시도", (int)found);
+    }
+    WiFi.scanDelete();
 
     for (uint8_t attempt = 1; attempt <= attempts; attempt++) {
         RLOGI("Wi-Fi 접속 시도 %u/%u: %s", (unsigned)attempt, (unsigned)attempts,
@@ -469,6 +493,7 @@ static bool connectWifi(uint8_t attempts) {
         WiFi.mode(WIFI_STA);
         WiFi.setSleep(WIFI_PS_NONE);
         WiFi.setAutoReconnect(true);
+        lastWifiReason = 0;
         WiFi.begin(c.ssid.c_str(), c.pass.c_str());
 
         const uint32_t waitMs = (attempts > 1 && attempt == 1) ? kWifiFirstTryMs : kWifiRetryMs;
@@ -478,7 +503,8 @@ static bool connectWifi(uint8_t attempts) {
             delay(100);
         }
         if (WiFi.status() == WL_CONNECTED) {
-            RLOGI("Wi-Fi 접속됨: %s", WiFi.localIP().toString().c_str());
+            RLOGI("Wi-Fi 접속됨: %s, RSSI=%ld dBm, 채널=%ld",
+                  WiFi.localIP().toString().c_str(), (long)WiFi.RSSI(), (long)WiFi.channel());
             return true;
         }
         RLOGE("Wi-Fi 접속 실패 (status=%d)", (int)WiFi.status());
